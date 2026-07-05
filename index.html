@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pausenplaner – SEV/Linien-Analyse</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<meta name="theme-color" content="#12161c">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<style>
+  :root{
+    --bg:#12161c;
+    --panel:#1a2029;
+    --panel2:#212936;
+    --line:#2b3444;
+    --text:#e7ebf1;
+    --dim:#8f9bb0;
+    --accent:#4fd1c5;
+    --accent2:#f2a154;
+    --danger:#e5626b;
+    --ok:#6fcf87;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+    line-height:1.4;
+    padding-bottom:60px;
+  }
+  header{
+    padding:20px 16px 14px;
+    border-bottom:1px solid var(--line);
+  }
+  header h1{
+    margin:0 0 4px;
+    font-size:1.25rem;
+    letter-spacing:0.2px;
+  }
+  header p{
+    margin:0;
+    color:var(--dim);
+    font-size:0.85rem;
+  }
+  main{max-width:640px;margin:0 auto;padding:16px;}
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:10px;
+    padding:16px;
+    margin-bottom:14px;
+  }
+  .card h2{
+    margin:0 0 10px;
+    font-size:0.95rem;
+    color:var(--accent);
+    text-transform:uppercase;
+    letter-spacing:0.6px;
+  }
+  .dropzone{
+    border:1.5px dashed var(--line);
+    border-radius:8px;
+    padding:26px 16px;
+    text-align:center;
+    color:var(--dim);
+    cursor:pointer;
+    transition:border-color .15s;
+  }
+  .dropzone:hover{border-color:var(--accent);}
+  .dropzone input{display:none;}
+  .row{
+    display:flex;
+    justify-content:space-between;
+    gap:10px;
+    padding:7px 0;
+    border-bottom:1px solid var(--line);
+    font-size:0.9rem;
+  }
+  .row:last-child{border-bottom:none;}
+  .row .label{color:var(--dim);}
+  .row .val{font-weight:600;text-align:right;}
+  input[type=text],input[type=number]{
+    background:var(--panel2);
+    border:1px solid var(--line);
+    color:var(--text);
+    border-radius:6px;
+    padding:8px 10px;
+    font-size:0.9rem;
+    width:100%;
+  }
+  label.field{display:block;font-size:0.8rem;color:var(--dim);margin-bottom:4px;}
+  .field-wrap{margin-bottom:10px;}
+  button{
+    background:var(--accent);
+    color:#0b1013;
+    border:none;
+    border-radius:7px;
+    padding:11px 16px;
+    font-size:0.92rem;
+    font-weight:700;
+    cursor:pointer;
+    width:100%;
+  }
+  button.secondary{
+    background:var(--panel2);
+    color:var(--text);
+    border:1px solid var(--line);
+  }
+  .status{
+    font-size:0.85rem;
+    color:var(--dim);
+    margin-top:8px;
+    min-height:1.2em;
+  }
+  .status.err{color:var(--danger);}
+  .status.ok{color:var(--ok);}
+  .option{
+    border:1px solid var(--line);
+    border-radius:8px;
+    padding:12px;
+    margin-bottom:10px;
+  }
+  .option.best{
+    border-color:var(--ok);
+    background:rgba(111,207,135,0.08);
+  }
+  .option h3{
+    margin:0 0 6px;
+    font-size:0.95rem;
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+  }
+  .badge{
+    background:var(--ok);
+    color:#0b1013;
+    font-size:0.7rem;
+    font-weight:800;
+    padding:2px 8px;
+    border-radius:20px;
+    text-transform:uppercase;
+  }
+  .option .end{
+    font-size:1.4rem;
+    font-weight:800;
+    color:var(--accent);
+  }
+  .option.best .end{color:var(--ok);}
+  .option p{margin:6px 0 0;font-size:0.85rem;color:var(--dim);}
+  .hidden{display:none;}
+  .blockline{font-family:monospace;font-size:0.78rem;color:var(--dim);white-space:pre-wrap;}
+  details summary{cursor:pointer;color:var(--dim);font-size:0.8rem;margin-top:6px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Pausenplaner</h1>
+  <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
+</header>
+
+<main>
+
+  <div class="card" id="uploadCard">
+    <h2>1. Dienstplan hochladen</h2>
+    <div class="dropzone" id="dropzone">
+      <input type="file" id="fileInput" accept="application/pdf">
+      <div id="dropzoneText">PDF antippen oder ablegen</div>
+    </div>
+    <div class="status" id="uploadStatus"></div>
+  </div>
+
+  <div class="card hidden" id="extractCard">
+    <h2>2. Erkannte Linienzeiten</h2>
+    <div class="row"><div class="label">Erste Haltestelle (Linienstart)</div><div class="val" id="startOrt">–</div></div>
+    <div class="row"><div class="label">Abfahrtszeit dort</div><div class="val" id="startTime">–</div></div>
+    <div class="row"><div class="label">Letzte Haltestelle (Linienende)</div><div class="val" id="endOrt">–</div></div>
+    <div class="row"><div class="label">Ankunftszeit dort</div><div class="val" id="endTime">–</div></div>
+    <div class="row"><div class="label">Reine Fahrzeit Linie(n) gesamt</div><div class="val" id="totalDrive">–</div></div>
+    <details>
+      <summary>Erkannte Rohdaten anzeigen</summary>
+      <div class="blockline" id="rawBlocks"></div>
+    </details>
+  </div>
+
+  <div class="card hidden" id="commuteCard">
+    <h2>3. Anfahrtszeit Firma ↔ Bahnhof</h2>
+    <div class="field-wrap">
+      <label class="field" id="commuteOutLabel">Fahrzeit Firma → Startbahnhof (Minuten)</label>
+      <input type="number" id="commuteOutInput" placeholder="z.B. 55">
+    </div>
+    <div class="field-wrap" id="commuteBackWrap">
+      <label class="field" id="commuteBackLabel">Fahrzeit Endbahnhof → Firma (Minuten)</label>
+      <input type="number" id="commuteBackInput" placeholder="z.B. 55">
+    </div>
+    <button id="calcBtn">Pausenaufteilung berechnen</button>
+    <div class="status" id="commuteStatus"></div>
+  </div>
+
+  <div class="card hidden" id="resultCard">
+    <h2>4. Ergebnis</h2>
+    <div id="results"></div>
+  </div>
+
+</main>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const LEGAL_LIMIT = 270; // 4:30 h in Minuten
+
+let parsed = null; // { startOrt, startTime, endOrt, endTime, driveSegments:[min], gapSegments:[min], totalDrive }
+
+// ---------- PDF Upload & Extraktion ----------
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if(e.target.files[0]) handleFile(e.target.files[0]); });
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.style.borderColor='var(--accent)'; });
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  if(e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+
+function setStatus(el, msg, cls){
+  el.textContent = msg;
+  el.className = 'status' + (cls ? ' ' + cls : '');
+}
+
+async function handleFile(file){
+  const statusEl = document.getElementById('uploadStatus');
+  document.getElementById('dropzoneText').textContent = file.name;
+  setStatus(statusEl, 'Lese PDF ein …');
+  try{
+    let lines = await extractLines(file);
+    let blocks = parseBlocks(lines);
+    if(blocks.length === 0){
+      setStatus(statusEl, 'Kein Text im PDF erkannt – vermutlich gescannt. Starte OCR (kann 10–30 Sek. dauern) …');
+      lines = await extractLinesOCR(file, statusEl);
+      blocks = parseBlocks(lines);
+    }
+    if(blocks.length === 0){
+      setStatus(statusEl, 'Auch per OCR keine Linien-Blöcke gefunden. Rohtext unten prüfen.', 'err');
+      document.getElementById('rawBlocks').textContent = lines.join('\n');
+      document.getElementById('extractCard').classList.remove('hidden');
+      return;
+    }
+    parsed = buildParsedResult(blocks);
+    if(!parsed){
+      setStatus(statusEl, 'Linien gefunden, aber Zeiten/Haltestellen konnten nicht sicher gelesen werden.', 'err');
+      return;
+    }
+    setStatus(statusEl, 'PDF erfolgreich gelesen.', 'ok');
+    showExtraction(parsed, blocks);
+    await prepareCommuteCard(parsed);
+  } catch(err){
+    console.error(err);
+    setStatus(statusEl, 'Fehler beim Lesen des PDFs: ' + err.message, 'err');
+  }
+}
+
+async function extractLines(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  let allLines = [];
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const items = content.items.map(it => ({str: it.str, x: it.transform[4], y: it.transform[5]}));
+    const groups = {};
+    items.forEach(it => {
+      const key = Math.round(it.y / 2.5) * 2.5;
+      if(!groups[key]) groups[key] = [];
+      groups[key].push(it);
+    });
+    const ys = Object.keys(groups).map(Number).sort((a,b) => b - a);
+    ys.forEach(y => {
+      const line = groups[y].sort((a,b) => a.x - b.x).map(it => it.str).join(' ').replace(/\s+/g,' ').trim();
+      if(line) allLines.push(line);
+    });
+  }
+  return allLines;
+}
+
+async function extractLinesOCR(file, statusEl){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  const worker = await Tesseract.createWorker('deu');
+  let allLines = [];
+  try{
+    for(let p = 1; p <= pdf.numPages; p++){
+      setStatus(statusEl, `OCR läuft: Seite ${p} von ${pdf.numPages} …`);
+      const page = await pdf.getPage(p);
+      let scale = 2;
+      const MAX_DIM = 1800; // Obergrenze gegen Speicherfehler auf Handys
+      let viewport = page.getViewport({scale});
+      if(Math.max(viewport.width, viewport.height) > MAX_DIM){
+        scale = scale * (MAX_DIM / Math.max(viewport.width, viewport.height));
+        viewport = page.getViewport({scale});
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d', {willReadFrequently: true});
+      await page.render({canvasContext: ctx, viewport}).promise;
+      const {data:{text}} = await worker.recognize(canvas);
+      text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => allLines.push(l));
+      canvas.width = 0;
+      canvas.height = 0;
+      page.cleanup();
+    }
+  } finally {
+    await worker.terminate();
+  }
+  return allLines;
+}
+
+function parseBlocks(lines){
+  const blocks = [];
+  let i = 0;
+  while(i < lines.length){
+    if(/^Linie\b.*\d+/i.test(lines[i]) && !/Länge|Fahrt-Nr/i.test(lines[i])){
+      const block = {header: lines[i], rows: []};
+      i++;
+      while(i < lines.length && /^(Länge in km|Fahrt-Nr)/i.test(lines[i])) i++;
+      while(i < lines.length && /^\d{1,2}[:.]\d{2}\b/.test(lines[i])){
+        block.rows.push(lines[i]);
+        i++;
+      }
+      if(block.rows.length >= 2) blocks.push(block);
+    } else {
+      i++;
+    }
+  }
+  return blocks;
+}
+
+function parseRow(row){
+  const m = row.match(/^(\d{1,2})[:.](\d{2})\s*(ab|an)?\s*(.+)$/i);
+  if(!m) return null;
+  const timeMin = parseInt(m[1],10) * 60 + parseInt(m[2],10);
+  const action = (m[3] || '').toLowerCase();
+  let ort = m[4].trim().replace(/\s+[A-Z]$/, '');
+  return {timeMin, action, ort, raw: row};
+}
+
+function buildParsedResult(blocks){
+  const blockData = blocks.map(b => {
+    const rows = b.rows.map(parseRow).filter(Boolean);
+    if(rows.length < 2) return null;
+    return {rows, first: rows[0], last: rows[rows.length - 1]};
+  }).filter(Boolean);
+  if(blockData.length === 0) return null;
+
+  const first = blockData[0].first;
+  const last = blockData[blockData.length - 1].last;
+
+  const driveSegments = blockData.map(b => {
+    let d = b.last.timeMin - b.first.timeMin;
+    if(d < 0) d += 1440;
+    return d;
+  });
+
+  const gapSegments = [];
+  for(let i = 0; i < blockData.length - 1; i++){
+    let g = blockData[i+1].first.timeMin - blockData[i].last.timeMin;
+    if(g < 0) g += 1440;
+    gapSegments.push(g);
+  }
+
+  return {
+    startOrt: first.ort,
+    startTime: first.timeMin,
+    endOrt: last.ort,
+    endTime: last.timeMin,
+    driveSegments,
+    gapSegments,
+    totalDrive: driveSegments.reduce((a,b) => a+b, 0),
+    blockData
+  };
+}
+
+function fmtTime(min){
+  min = ((min % 1440) + 1440) % 1440;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+}
+function fmtDur(min){
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  return (h>0 ? h + ':' + String(m).padStart(2,'0') + ' h' : m + ' min');
+}
+
+function showExtraction(p, blocks){
+  document.getElementById('extractCard').classList.remove('hidden');
+  document.getElementById('startOrt').textContent = p.startOrt;
+  document.getElementById('startTime').textContent = fmtTime(p.startTime);
+  document.getElementById('endOrt').textContent = p.endOrt;
+  document.getElementById('endTime').textContent = fmtTime(p.endTime);
+  document.getElementById('totalDrive').textContent = fmtDur(p.totalDrive);
+  document.getElementById('rawBlocks').textContent = blocks.map(b => b.header + '\n' + b.rows.join('\n')).join('\n\n');
+}
+
+// ---------- Anfahrtszeiten speichern/abrufen ----------
+
+function normKey(name){
+  return 'anfahrt:' + name.toLowerCase().replace(/[^a-z0-9]+/g,'_').slice(0,150);
+}
+
+async function getStoredCommute(ort){
+  try{
+    const res = await window.storage.get(normKey(ort));
+    return res ? parseFloat(res.value) : null;
+  } catch(e){ return null; }
+}
+async function setStoredCommute(ort, minutes){
+  try{ await window.storage.set(normKey(ort), String(minutes)); } catch(e){ console.error(e); }
+}
+
+async function prepareCommuteCard(p){
+  const card = document.getElementById('commuteCard');
+  card.classList.remove('hidden');
+  document.getElementById('commuteOutLabel').textContent = `Fahrzeit Firma → ${p.startOrt} (Minuten)`;
+  document.getElementById('commuteBackLabel').textContent = `Fahrzeit ${p.endOrt} → Firma (Minuten)`;
+
+  const outVal = await getStoredCommute(p.startOrt);
+  const backVal = await getStoredCommute(p.endOrt);
+  const outInput = document.getElementById('commuteOutInput');
+  const backInput = document.getElementById('commuteBackInput');
+  const backWrap = document.getElementById('commuteBackWrap');
+
+  outInput.value = outVal !== null ? outVal : '';
+  if(p.endOrt === p.startOrt){
+    backWrap.classList.add('hidden');
+  } else {
+    backWrap.classList.remove('hidden');
+    backInput.value = backVal !== null ? backVal : '';
+  }
+  setStatus(document.getElementById('commuteStatus'),
+    (outVal !== null ? 'Anfahrtszeit gespeichert gefunden – bitte prüfen.' : 'Bitte Anfahrtszeit einmalig eingeben, wird für dieses Bahnhof gespeichert.'), '');
+}
+
+document.getElementById('calcBtn').addEventListener('click', async () => {
+  if(!parsed) return;
+  const status = document.getElementById('commuteStatus');
+  const outMin = parseFloat(document.getElementById('commuteOutInput').value);
+  if(isNaN(outMin) || outMin <= 0){
+    setStatus(status, 'Bitte gültige Anfahrtszeit (Minuten) eingeben.', 'err');
+    return;
+  }
+  let backMin = outMin;
+  if(parsed.endOrt !== parsed.startOrt){
+    backMin = parseFloat(document.getElementById('commuteBackInput').value);
+    if(isNaN(backMin) || backMin <= 0){
+      setStatus(status, 'Bitte gültige Rückfahrtzeit (Minuten) eingeben.', 'err');
+      return;
+    }
+  }
+  await setStoredCommute(parsed.startOrt, outMin);
+  await setStoredCommute(parsed.endOrt, backMin);
+  setStatus(status, 'Gespeichert.', 'ok');
+  computeAndShow(parsed, outMin, backMin);
+});
+
+// ---------- Simulation der Lenkzeit-Regelung ----------
+// Segmente in chronologischer Reihenfolge simulieren.
+// Regel: 4:30h (270min) max. Fahrzeit ohne durchgehende Pause.
+// Pause >=45min -> voller Reset.
+// Pause >=15 & <45min als "erster Teil" markiert (nur einmal wirksam).
+// Folgt danach eine Pause >=30min (zweiter Teil) -> Reset.
+// Wird die 270min-Grenze innerhalb eines Fahrsegments überschritten -> Verstoß an dieser Stelle.
+
+function simulate(segments){
+  // segments: [{type:'drive', min}, {type:'break', min}]
+  let cum = 0, firstPartTaken = false, violationAt = -1;
+  segments.forEach((seg, idx) => {
+    if(seg.type === 'drive'){
+      cum += seg.min;
+      if(cum > LEGAL_LIMIT && violationAt === -1) violationAt = idx;
+    } else {
+      if(seg.min >= 45){ cum = 0; firstPartTaken = false; }
+      else if(seg.min >= 30 && firstPartTaken){ cum = 0; firstPartTaken = false; }
+      else if(seg.min >= 15 && !firstPartTaken){ firstPartTaken = true; }
+    }
+  });
+  return {cum, firstPartTaken, violation: violationAt !== -1};
+}
+
+function computeAndShow(p, commuteOut, commuteBack){
+  // Basissegmente ohne Zusatzpause (natürliche Lücken zwischen Linienblöcken enthalten)
+  function baseSegments(){
+    const segs = [{type:'drive', min: commuteOut}];
+    p.driveSegments.forEach((d, i) => {
+      segs.push({type:'drive', min: d});
+      if(i < p.gapSegments.length) segs.push({type:'break', min: p.gapSegments[i]});
+    });
+    segs.push({type:'drive', min: commuteBack});
+    return segs;
+  }
+
+  // OPTION A: Zusatzpause erst am Ende (vor Rückfahrt), Minimalgröße ermitteln
+  const segsA_noEnd = baseSegments();
+  segsA_noEnd.pop(); // commuteBack rausnehmen, um Stand vor Rückfahrt zu prüfen
+  const stateBeforeBack = simulate(segsA_noEnd);
+  let neededEndBreak = 0;
+  if(stateBeforeBack.cum + commuteBack > LEGAL_LIMIT){
+    neededEndBreak = stateBeforeBack.firstPartTaken ? 30 : 45;
+  }
+  const optionA = {
+    label: 'Pause am Ende (vor Rückfahrt)',
+    endBreak: neededEndBreak,
+    startClock: p.startTime - commuteOut,
+    endClock: p.endTime + neededEndBreak + commuteBack
+  };
+
+  // OPTION B: 45-min-Pause direkt nach der Anfahrt (vor erster Haltestelle einlegen)
+  const segsB = [{type:'drive', min: commuteOut}, {type:'break', min: 45}];
+  p.driveSegments.forEach((d, i) => {
+    segsB.push({type:'drive', min: d});
+    if(i < p.gapSegments.length) segsB.push({type:'break', min: p.gapSegments[i]});
+  });
+  segsB.push({type:'drive', min: commuteBack});
+  const stateB = simulate(segsB);
+  const optionB = {
+    label: 'Pause vor Linienstart (nach Anfahrt)',
+    frontBreak: 45,
+    extraEndBreak: 0,
+    startClock: p.startTime - commuteOut - 45,
+    endClock: p.endTime + commuteBack
+  };
+  if(stateB.violation){
+    // Falls trotz Frontpause am Ende noch etwas nötig wäre (Rand-/Sonderfall)
+    optionB.extraEndBreak = 30;
+    optionB.endClock += 30;
+  }
+
+  renderResults(p, optionA, optionB);
+}
+
+function renderResults(p, a, b){
+  document.getElementById('resultCard').classList.remove('hidden');
+  const container = document.getElementById('results');
+  const aIsBetter = a.endClock <= b.endClock;
+  const needsA = a.endBreak > 0;
+  const needsB_only_if = true;
+
+  let html = '';
+
+  // Option A
+  html += `<div class="option ${aIsBetter && needsA ? 'best' : ''}">
+    <h3>${a.label} ${aIsBetter ? '<span class="badge">Früher</span>' : ''}</h3>
+    ${a.endBreak > 0
+      ? `<p>Erforderliche Pause an ${p.endOrt} (${fmtTime(p.endTime)} Uhr): <strong>${a.endBreak} min</strong></p>`
+      : `<p>Keine zusätzliche Pause nötig.</p>`}
+    <div class="end">Feierabend ca. ${fmtTime(a.endClock)} Uhr</div>
+    <p>Abfahrt ab Firma: ${fmtTime(a.startClock)} Uhr</p>
+  </div>`;
+
+  // Option B
+  html += `<div class="option ${!aIsBetter ? 'best' : ''}">
+    <h3>${b.label} ${!aIsBetter ? '<span class="badge">Früher</span>' : ''}</h3>
+    <p>45 min Pause direkt nach Ankunft in ${p.startOrt}, vor Linienbeginn (${fmtTime(p.startTime)} Uhr).</p>
+    ${b.extraEndBreak > 0 ? `<p>Zusätzlich am Ende nötig: ${b.extraEndBreak} min.</p>` : `<p>Am Ende keine weitere Pause nötig.</p>`}
+    <div class="end">Feierabend ca. ${fmtTime(b.endClock)} Uhr</div>
+    <p>Abfahrt ab Firma: ${fmtTime(b.startClock)} Uhr (45 min früher als Option A)</p>
+  </div>`;
+
+  if(!needsA){
+    html = `<div class="option best"><h3>Keine Zusatzpause erforderlich</h3>
+      <p>Gesamte Fahrzeit (Anfahrt + Linie(n) + Rückfahrt) bleibt unter 4:30 h.</p>
+      <div class="end">Feierabend ca. ${fmtTime(a.endClock)} Uhr</div></div>`;
+  } else {
+    html += `<p style="color:var(--dim);font-size:0.8rem;margin-top:4px;">
+      Empfehlung: ${a.endClock < b.endClock ? 'Pause am Ende reicht bereits und ist am günstigsten.' :
+      (b.endClock < a.endClock ? 'Frühere Pause vor Linienstart spart Zeit am Ende, dafür ' + (b.startClock < a.startClock ? (a.startClock - b.startClock) : 0) + ' min früherer Start.' : 'Beide Varianten enden gleich.')}
+    </p>`;
+  }
+
+  container.innerHTML = html;
+}if('serviceWorker' in navigator){
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+}
+</script>
+</body>
+</html>
