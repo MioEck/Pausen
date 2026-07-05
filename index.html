@@ -313,8 +313,20 @@ async function extractLinesOCR(file, statusEl){
       canvas.height = Math.round(viewport.height);
       const ctx = canvas.getContext('2d', {willReadFrequently: true});
       await page.render({canvasContext: ctx, viewport}).promise;
-      const {data:{text}} = await worker.recognize(canvas);
-      text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => allLines.push(l));
+      const {data} = await worker.recognize(canvas);
+      const words = (data.words || []).filter(w => w.text && w.text.trim());
+      const groups = {};
+      words.forEach(w => {
+        const yMid = (w.bbox.y0 + w.bbox.y1) / 2;
+        const key = Math.round(yMid / 10) * 10;
+        if(!groups[key]) groups[key] = [];
+        groups[key].push(w);
+      });
+      const ys = Object.keys(groups).map(Number).sort((a,b) => a - b);
+      ys.forEach(y => {
+        const line = groups[y].sort((a,b) => a.bbox.x0 - b.bbox.x0).map(w => w.text).join(' ').replace(/\s+/g,' ').trim();
+        if(line) allLines.push(line);
+      });
       canvas.width = 0;
       canvas.height = 0;
       page.cleanup();
@@ -329,15 +341,21 @@ function parseBlocks(lines){
   const blocks = [];
   let i = 0;
   while(i < lines.length){
-    if(/^Linie\b.*\d+/i.test(lines[i]) && !/Länge|Fahrt-Nr/i.test(lines[i])){
-      const block = {header: lines[i], rows: []};
+    const kmMatch = lines[i].match(/L[äa]nge in k[m]?\s*[:.]?\s*([\d.,]+)/i);
+    if(kmMatch){
+      const km = parseFloat(kmMatch[1].replace(/\./g,'').replace(',','.'));
       i++;
-      while(i < lines.length && /^(Länge in km|Fahrt-Nr)/i.test(lines[i])) i++;
-      while(i < lines.length && /^\d{1,2}[:.]\d{2}\b/.test(lines[i])){
-        block.rows.push(lines[i]);
+      while(i < lines.length && !/^\d{1,2}[:.]\d{2}\b/.test(lines[i]) && !/L[äa]nge in k/i.test(lines[i])){
         i++;
       }
-      if(block.rows.length >= 2) blocks.push(block);
+      const rows = [];
+      while(i < lines.length && /^\d{1,2}[:.]\d{2}\b/.test(lines[i])){
+        rows.push(lines[i]);
+        i++;
+      }
+      if(km > 20 && rows.length >= 2){
+        blocks.push({header: `Linie (${km} km)`, rows});
+      }
     } else {
       i++;
     }
