@@ -174,12 +174,33 @@
   </div>
 
   <div class="card hidden" id="extractCard">
-    <h2>2. Erkannte Linienzeiten</h2>
-    <div class="row"><div class="label">Erste Haltestelle (Linienstart)</div><div class="val" id="startOrt">–</div></div>
-    <div class="row"><div class="label">Abfahrtszeit dort</div><div class="val" id="startTime">–</div></div>
-    <div class="row"><div class="label">Letzte Haltestelle (Linienende)</div><div class="val" id="endOrt">–</div></div>
-    <div class="row"><div class="label">Ankunftszeit dort</div><div class="val" id="endTime">–</div></div>
-    <div class="row"><div class="label">Reine Fahrzeit Linie(n) gesamt</div><div class="val" id="totalDrive">–</div></div>
+    <h2>2. Linienzeiten (prüfen/korrigieren)</h2>
+    <div class="field-wrap">
+      <label class="field">Erste Haltestelle (Linienstart)</label>
+      <input type="text" id="startOrtInput" placeholder="z.B. Flensburg, Bahnhof">
+    </div>
+    <div class="field-wrap">
+      <label class="field">Abfahrtszeit dort (HH:MM)</label>
+      <input type="text" id="startTimeInput" placeholder="z.B. 19:35">
+    </div>
+    <div class="field-wrap">
+      <label class="field">Letzte Haltestelle (Linienende)</label>
+      <input type="text" id="endOrtInput" placeholder="z.B. Flensburg, Bahnhof">
+    </div>
+    <div class="field-wrap">
+      <label class="field">Ankunftszeit dort (HH:MM)</label>
+      <input type="text" id="endTimeInput" placeholder="z.B. 23:15">
+    </div>
+    <div class="field-wrap">
+      <label class="field">Reine Fahrzeit der Linie(n) gesamt (Minuten)</label>
+      <input type="number" id="totalDriveInput" placeholder="z.B. 199">
+    </div>
+    <div class="field-wrap">
+      <label class="field">Geplante Pause zwischen den Linien-Abschnitten (Minuten, 0 wenn keine)</label>
+      <input type="number" id="plannedBreakInput" placeholder="z.B. 18" value="0">
+    </div>
+    <button id="useValuesBtn">Werte übernehmen</button>
+    <div class="status" id="extractStatus"></div>
     <details>
       <summary>Erkannte Rohdaten anzeigen</summary>
       <div class="blockline" id="rawBlocks"></div>
@@ -235,39 +256,68 @@ async function handleFile(file){
   const statusEl = document.getElementById('uploadStatus');
   document.getElementById('dropzoneText').textContent = file.name;
   setStatus(statusEl, 'Lese PDF ein …');
+  document.getElementById('extractCard').classList.remove('hidden');
+  let lines = [];
   try{
-    let lines = await extractLines(file);
+    lines = await extractLines(file);
     let blocks = parseBlocks(lines);
     if(blocks.length === 0){
       setStatus(statusEl, 'Kein Text im PDF erkannt – vermutlich gescannt. Starte OCR (kann 10–30 Sek. dauern) …');
       lines = await extractLinesOCR(file, statusEl);
       blocks = parseBlocks(lines);
     }
-    if(blocks.length === 0){
-      const rawEl = document.getElementById('rawBlocks');
-      document.getElementById('extractCard').classList.remove('hidden');
-      if(lines.length === 0){
-        setStatus(statusEl, 'OCR hat keinerlei Text erkannt (0 Zeichen). PDF-Qualität/Auflösung reicht vermutlich nicht, oder es ist kein normaler Scan.', 'err');
-        rawEl.textContent = '(kein Text erkannt)';
-      } else {
-        setStatus(statusEl, `OCR hat ${lines.length} Zeilen erkannt, aber kein "Linie"-Muster gefunden.`, 'err');
-        rawEl.textContent = lines.join('\n');
-      }
-      return;
+    document.getElementById('rawBlocks').textContent = lines.length ? lines.join('\n') : '(kein Text erkannt)';
+    const guess = buildParsedResult(blocks);
+    if(guess){
+      fillExtractFields(guess);
+      setStatus(statusEl, 'Automatisch erkannt – bitte prüfen und ggf. korrigieren.', 'ok');
+    } else {
+      setStatus(statusEl, 'Automatische Erkennung nicht sicher möglich – bitte Felder unten manuell ausfüllen (Rohdaten unten zur Hilfe).', 'err');
     }
-    parsed = buildParsedResult(blocks);
-    if(!parsed){
-      setStatus(statusEl, 'Linien gefunden, aber Zeiten/Haltestellen konnten nicht sicher gelesen werden.', 'err');
-      return;
-    }
-    setStatus(statusEl, 'PDF erfolgreich gelesen.', 'ok');
-    showExtraction(parsed, blocks);
-    await prepareCommuteCard(parsed);
   } catch(err){
     console.error(err);
-    setStatus(statusEl, 'Fehler beim Lesen des PDFs: ' + err.message, 'err');
+    setStatus(statusEl, 'Automatische Erkennung fehlgeschlagen (' + err.message + ') – bitte Felder unten manuell ausfüllen.', 'err');
   }
 }
+
+function fillExtractFields(p){
+  document.getElementById('startOrtInput').value = p.startOrt;
+  document.getElementById('startTimeInput').value = fmtTime(p.startTime);
+  document.getElementById('endOrtInput').value = p.endOrt;
+  document.getElementById('endTimeInput').value = fmtTime(p.endTime);
+  document.getElementById('totalDriveInput').value = p.totalDrive;
+  document.getElementById('plannedBreakInput').value = p.gapSegments.reduce((a,b)=>a+b,0);
+}
+
+function parseTimeStr(s){
+  const m = String(s).trim().match(/^(\d{1,2})[:.](\d{2})$/);
+  if(!m) return null;
+  return parseInt(m[1],10)*60 + parseInt(m[2],10);
+}
+
+document.getElementById('useValuesBtn').addEventListener('click', () => {
+  const statusEl = document.getElementById('extractStatus');
+  const startOrt = document.getElementById('startOrtInput').value.trim();
+  const endOrt = document.getElementById('endOrtInput').value.trim();
+  const startTime = parseTimeStr(document.getElementById('startTimeInput').value);
+  const endTime = parseTimeStr(document.getElementById('endTimeInput').value);
+  const totalDrive = parseFloat(document.getElementById('totalDriveInput').value);
+  const plannedBreak = parseFloat(document.getElementById('plannedBreakInput').value) || 0;
+
+  if(!startOrt || !endOrt || startTime === null || endTime === null || isNaN(totalDrive) || totalDrive <= 0){
+    setStatus(statusEl, 'Bitte alle Felder gültig ausfüllen (Zeiten als HH:MM, Fahrzeit in Minuten).', 'err');
+    return;
+  }
+
+  parsed = {
+    startOrt, endOrt, startTime, endTime,
+    driveSegments: [totalDrive],
+    gapSegments: plannedBreak > 0 ? [plannedBreak] : [],
+    totalDrive
+  };
+  setStatus(statusEl, 'Übernommen.', 'ok');
+  prepareCommuteCard(parsed);
+});
 
 async function extractLines(file){
   const buf = await file.arrayBuffer();
@@ -418,16 +468,6 @@ function fmtDur(min){
   const h = Math.floor(min / 60);
   const m = min % 60;
   return (h>0 ? h + ':' + String(m).padStart(2,'0') + ' h' : m + ' min');
-}
-
-function showExtraction(p, blocks){
-  document.getElementById('extractCard').classList.remove('hidden');
-  document.getElementById('startOrt').textContent = p.startOrt;
-  document.getElementById('startTime').textContent = fmtTime(p.startTime);
-  document.getElementById('endOrt').textContent = p.endOrt;
-  document.getElementById('endTime').textContent = fmtTime(p.endTime);
-  document.getElementById('totalDrive').textContent = fmtDur(p.totalDrive);
-  document.getElementById('rawBlocks').textContent = blocks.map(b => b.header + '\n' + b.rows.join('\n')).join('\n\n');
 }
 
 // ---------- Anfahrtszeiten speichern/abrufen ----------
