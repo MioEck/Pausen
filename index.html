@@ -169,6 +169,7 @@
     <div class="field-wrap">
       <label class="field">Google Cloud Vision API-Key (einmalig, wird gespeichert)</label>
       <input type="text" id="apiKeyInput" placeholder="AIza...">
+      <div class="status" id="apiKeyStatus"></div>
     </div>
     <div class="dropzone" id="dropzone">
       <input type="file" id="fileInput" accept="application/pdf">
@@ -257,15 +258,29 @@ function setStatus(el, msg, cls){
 }
 
 const apiKeyInput = document.getElementById('apiKeyInput');
+const apiKeyStatus = document.getElementById('apiKeyStatus');
 (async () => {
   try{
     const res = await window.storage.get('settings:gcv_api_key');
-    if(res && res.value) apiKeyInput.value = res.value;
+    if(res && res.value){
+      apiKeyInput.value = res.value;
+      setStatus(apiKeyStatus, 'Gespeicherter Key geladen.', 'ok');
+    }
   } catch(e){}
 })();
-apiKeyInput.addEventListener('change', async () => {
-  try{ await window.storage.set('settings:gcv_api_key', apiKeyInput.value.trim()); } catch(e){}
-});
+async function saveApiKey(){
+  const val = apiKeyInput.value.trim();
+  if(!val){ setStatus(apiKeyStatus, ''); return; }
+  try{
+    const result = await window.storage.set('settings:gcv_api_key', val);
+    if(result){ setStatus(apiKeyStatus, 'Key gespeichert ✓', 'ok'); }
+    else { setStatus(apiKeyStatus, 'Speichern fehlgeschlagen.', 'err'); }
+  } catch(e){
+    setStatus(apiKeyStatus, 'Speichern fehlgeschlagen: ' + e.message, 'err');
+  }
+}
+apiKeyInput.addEventListener('change', saveApiKey);
+apiKeyInput.addEventListener('blur', saveApiKey);
 
 async function handleFile(file){
   const statusEl = document.getElementById('uploadStatus');
@@ -450,54 +465,48 @@ function parseRow(row){
   return {timeMin, action, ort, raw: row};
 }
 
-function cityOf(ort){
-  return ort.split(',')[0].trim().toLowerCase().replace(/[^a-zäöüß]/g,'');
-}
-
 function buildParsedResult(lines){
-  const betriebshofMatch = lines.join(' ').match(/Betriebshof[:.]?\s*([A-Za-zÄÖÜäöüß]+(?:\s+[A-Za-zÄÖÜäöüß]+)?)/i);
-  const depot = betriebshofMatch ? betriebshofMatch[1].trim().toLowerCase() : null;
-
-  let entries = lines.map(parseRow).filter(Boolean);
-  if(depot) entries = entries.filter(e => !e.ort.toLowerCase().includes(depot));
-
-  const seen = new Set();
-  const deduped = [];
-  entries.forEach(e => {
-    const key = cityOf(e.ort) + '|' + e.action + '|' + e.timeMin;
-    if(seen.has(key)) return;
-    seen.add(key);
-    deduped.push(e);
-  });
-
-  const firstIdx = deduped.findIndex(e => e.action === 'ab');
-  let lastIdx = -1;
-  for(let i = deduped.length - 1; i >= 0; i--){ if(deduped[i].action === 'an'){ lastIdx = i; break; } }
-  if(firstIdx === -1 || lastIdx === -1 || lastIdx <= firstIdx) return null;
-
-  const win = deduped.slice(firstIdx, lastIdx + 1);
-  const first = win[0], last = win[win.length - 1];
-
-  const gapSegments = [];
-  for(let i = 0; i < win.length - 1; i++){
-    const cur = win[i], next = win[i+1];
-    if(cur.action === 'an' && next.action === 'ab' && cityOf(cur.ort) === cityOf(next.ort)){
-      let g = next.timeMin - cur.timeMin;
-      if(g < 0) g += 1440;
-      if(g > 0) gapSegments.push(g);
+  const blocks = [];
+  let i = 0;
+  while(i < lines.length){
+    if(/^Linie\b/i.test(lines[i])){
+      let j = i + 1;
+      while(j < lines.length && !/^\d{1,2}[:.]\d{2}\b/.test(lines[j]) && j < i + 4) j++;
+      const rows = [];
+      while(j < lines.length && /^\d{1,2}[:.]\d{2}\b/.test(lines[j])){
+        const row = parseRow(lines[j]);
+        if(row) rows.push(row);
+        j++;
+      }
+      if(rows.length >= 1) blocks.push(rows);
+      i = j;
+    } else {
+      i++;
     }
   }
-  let totalWindow = last.timeMin - first.timeMin;
-  if(totalWindow < 0) totalWindow += 1440;
-  const totalDrive = totalWindow - gapSegments.reduce((a,b) => a+b, 0);
+  if(blocks.length === 0) return null;
+
+  const first = blocks[0][0];
+  const last = blocks[blocks.length - 1][blocks[blocks.length - 1].length - 1];
+
+  const driveSegments = blocks.map(rows => {
+    let d = rows[rows.length - 1].timeMin - rows[0].timeMin;
+    if(d < 0) d += 1440;
+    return d;
+  });
+  const gapSegments = [];
+  for(let k = 0; k < blocks.length - 1; k++){
+    let g = blocks[k+1][0].timeMin - blocks[k][blocks[k].length - 1].timeMin;
+    if(g < 0) g += 1440;
+    if(g > 0) gapSegments.push(g);
+  }
+  const totalDrive = driveSegments.reduce((a,b) => a+b, 0);
   if(totalDrive <= 0) return null;
 
   return {
     startOrt: first.ort, startTime: first.timeMin,
     endOrt: last.ort, endTime: last.timeMin,
-    driveSegments: [totalDrive],
-    gapSegments,
-    totalDrive
+    driveSegments, gapSegments, totalDrive
   };
 }
 
