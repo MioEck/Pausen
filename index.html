@@ -166,6 +166,10 @@
 
   <div class="card" id="uploadCard">
     <h2>1. Dienstplan hochladen</h2>
+    <div class="field-wrap">
+      <label class="field">Google Cloud Vision API-Key (einmalig, wird gespeichert)</label>
+      <input type="text" id="apiKeyInput" placeholder="AIza...">
+    </div>
     <div class="dropzone" id="dropzone">
       <input type="file" id="fileInput" accept="application/pdf">
       <div id="dropzoneText">PDF antippen oder ablegen</div>
@@ -252,17 +256,33 @@ function setStatus(el, msg, cls){
   el.className = 'status' + (cls ? ' ' + cls : '');
 }
 
+const apiKeyInput = document.getElementById('apiKeyInput');
+(async () => {
+  try{
+    const res = await window.storage.get('settings:gcv_api_key');
+    if(res && res.value) apiKeyInput.value = res.value;
+  } catch(e){}
+})();
+apiKeyInput.addEventListener('change', async () => {
+  try{ await window.storage.set('settings:gcv_api_key', apiKeyInput.value.trim()); } catch(e){}
+});
+
 async function handleFile(file){
   const statusEl = document.getElementById('uploadStatus');
   document.getElementById('dropzoneText').textContent = file.name;
   setStatus(statusEl, 'Lese PDF ein …');
   document.getElementById('extractCard').classList.remove('hidden');
   let lines = [];
+  const apiKey = apiKeyInput.value.trim();
   try{
     lines = await extractLines(file);
     let guess = buildParsedResult(lines);
-    if(!guess){
-      setStatus(statusEl, 'Kein Text im PDF erkannt – vermutlich gescannt. Starte OCR (kann 10–30 Sek. dauern) …');
+    if(!guess && apiKey){
+      setStatus(statusEl, 'Kein Text im PDF – sende an Google Cloud Vision …');
+      lines = await extractLinesVision(file, apiKey);
+      guess = buildParsedResult(lines);
+    } else if(!guess && !apiKey){
+      setStatus(statusEl, 'Kein Text im PDF – ohne API-Key läuft die schwächere lokale Erkennung. Starte OCR (kann dauern) …');
       lines = await extractLinesOCR(file, statusEl);
       guess = buildParsedResult(lines);
     }
@@ -277,6 +297,50 @@ async function handleFile(file){
     console.error(err);
     setStatus(statusEl, 'Automatische Erkennung fehlgeschlagen (' + err.message + ') – bitte Felder unten manuell ausfüllen.', 'err');
   }
+}
+
+async function extractLinesVision(file, apiKey){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+  let allLines = [];
+  for(let p = 1; p <= pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    let scale = 2.5;
+    const MAX_DIM = 2200;
+    let viewport = page.getViewport({scale});
+    if(Math.max(viewport.width, viewport.height) > MAX_DIM){
+      scale = scale * (MAX_DIM / Math.max(viewport.width, viewport.height));
+      viewport = page.getViewport({scale});
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(viewport.width);
+    canvas.height = Math.round(viewport.height);
+    const ctx = canvas.getContext('2d');
+    await page.render({canvasContext: ctx, viewport}).promise;
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+    const base64 = dataUrl.split(',')[1];
+    canvas.width = 0; canvas.height = 0; page.cleanup();
+
+    const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        requests: [{
+          image: {content: base64},
+          features: [{type: 'DOCUMENT_TEXT_DETECTION'}],
+          imageContext: {languageHints: ['de']}
+        }]
+      })
+    });
+    const json = await resp.json();
+    if(json.responses && json.responses[0] && json.responses[0].error){
+      throw new Error(json.responses[0].error.message);
+    }
+    const text = json.responses && json.responses[0] && json.responses[0].fullTextAnnotation
+      ? json.responses[0].fullTextAnnotation.text : '';
+    text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => allLines.push(l));
+  }
+  return allLines;
 }
 
 function fillExtractFields(p){
