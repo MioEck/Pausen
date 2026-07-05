@@ -244,9 +244,15 @@ async function handleFile(file){
       blocks = parseBlocks(lines);
     }
     if(blocks.length === 0){
-      setStatus(statusEl, 'Auch per OCR keine Linien-Blöcke gefunden. Rohtext unten prüfen.', 'err');
-      document.getElementById('rawBlocks').textContent = lines.join('\n');
+      const rawEl = document.getElementById('rawBlocks');
       document.getElementById('extractCard').classList.remove('hidden');
+      if(lines.length === 0){
+        setStatus(statusEl, 'OCR hat keinerlei Text erkannt (0 Zeichen). PDF-Qualität/Auflösung reicht vermutlich nicht, oder es ist kein normaler Scan.', 'err');
+        rawEl.textContent = '(kein Text erkannt)';
+      } else {
+        setStatus(statusEl, `OCR hat ${lines.length} Zeilen erkannt, aber kein "Linie"-Muster gefunden.`, 'err');
+        rawEl.textContent = lines.join('\n');
+      }
       return;
     }
     parsed = buildParsedResult(blocks);
