@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.4</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.5</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -259,22 +259,21 @@ function setStatus(el, msg, cls){
 
 const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeyStatus = document.getElementById('apiKeyStatus');
-(async () => {
+(() => {
   try{
-    const res = await window.storage.get('settings:gcv_api_key');
-    if(res && res.value){
-      apiKeyInput.value = res.value;
+    const val = localStorage.getItem('gcv_api_key');
+    if(val){
+      apiKeyInput.value = val;
       setStatus(apiKeyStatus, 'Gespeicherter Key geladen.', 'ok');
     }
   } catch(e){}
 })();
-async function saveApiKey(){
+function saveApiKey(){
   const val = apiKeyInput.value.trim();
   if(!val){ setStatus(apiKeyStatus, ''); return; }
   try{
-    const result = await window.storage.set('settings:gcv_api_key', val);
-    if(result){ setStatus(apiKeyStatus, 'Key gespeichert ✓', 'ok'); }
-    else { setStatus(apiKeyStatus, 'Speichern fehlgeschlagen.', 'err'); }
+    localStorage.setItem('gcv_api_key', val);
+    setStatus(apiKeyStatus, 'Key gespeichert ✓', 'ok');
   } catch(e){
     setStatus(apiKeyStatus, 'Speichern fehlgeschlagen: ' + e.message, 'err');
   }
@@ -530,12 +529,12 @@ function normKey(name){
 
 async function getStoredCommute(ort){
   try{
-    const res = await window.storage.get(normKey(ort));
-    return res ? parseFloat(res.value) : null;
+    const val = localStorage.getItem(normKey(ort));
+    return val !== null ? parseFloat(val) : null;
   } catch(e){ return null; }
 }
 async function setStoredCommute(ort, minutes){
-  try{ await window.storage.set(normKey(ort), String(minutes)); } catch(e){ console.error(e); }
+  try{ localStorage.setItem(normKey(ort), String(minutes)); } catch(e){ console.error(e); }
 }
 
 async function prepareCommuteCard(p){
