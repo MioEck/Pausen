@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.5</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.6</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -347,11 +347,18 @@ async function extractLinesVision(file, apiKey){
       })
     });
     const json = await resp.json();
+    if(json.error){
+      throw new Error('Vision API: ' + json.error.message);
+    }
     if(json.responses && json.responses[0] && json.responses[0].error){
-      throw new Error(json.responses[0].error.message);
+      throw new Error('Vision API: ' + json.responses[0].error.message);
     }
     const text = json.responses && json.responses[0] && json.responses[0].fullTextAnnotation
       ? json.responses[0].fullTextAnnotation.text : '';
+    if(!text){
+      allLines.push('(Vision-Antwort ohne Text – Debug-JSON:)');
+      allLines.push(JSON.stringify(json).slice(0, 1500));
+    }
     text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => allLines.push(l));
   }
   return allLines;
