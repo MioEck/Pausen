@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.9</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v2.0</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -507,6 +507,32 @@ function parseRow(row){
   return {timeMin, action, ort, raw: row};
 }
 
+function reorderScrambledRows(lines){
+  const isTime = l => /^\d{1,2}[:.]\d{2}\.?\s*$/i.test(l.trim());
+  const isAction = l => /^(ab|an)$/i.test(l.trim());
+  const stop = /^(Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b)/i;
+  const out = [];
+  let i = 0;
+  while(i < lines.length){
+    const a = lines[i], b = lines[i+1], c = lines[i+2];
+    if(a !== undefined && b !== undefined && c !== undefined &&
+       !isTime(a) && !isAction(a) && !stop.test(a) &&
+       isAction(b) && isTime(c)){
+      out.push(c.trim() + ' ' + b.trim() + ' ' + a.trim());
+      i += 3; continue;
+    }
+    if(a !== undefined && b !== undefined &&
+       !isTime(a) && !isAction(a) && !stop.test(a) &&
+       isTime(b)){
+      out.push(b.trim() + ' ' + a.trim());
+      i += 2; continue;
+    }
+    out.push(a);
+    i += 1;
+  }
+  return out;
+}
+
 function mergeSplitRows(lines){
   const out = [];
   const stopPattern = /^(\d{1,2}[:.]\d{2}\b|Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b)/i;
@@ -532,7 +558,7 @@ function mergeSplitRows(lines){
 }
 
 function buildParsedResult(rawLines){
-  const lines = mergeSplitRows(rawLines);
+  const lines = mergeSplitRows(reorderScrambledRows(rawLines));
   const blocks = [];
   let i = 0;
   while(i < lines.length){
