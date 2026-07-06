@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.8</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.9</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -313,6 +313,27 @@ async function handleFile(file){
   }
 }
 
+function blockToLines(block){
+  const lines = [];
+  let cur = '';
+  block.paragraphs.forEach(para => {
+    para.words.forEach(w => {
+      const wordText = w.symbols.map(s => s.text).join('');
+      cur += wordText;
+      const lastSym = w.symbols[w.symbols.length - 1];
+      const brk = lastSym.property && lastSym.property.detectedBreak && lastSym.property.detectedBreak.type;
+      if(brk === 'LINE_BREAK' || brk === 'EOL_SURE_SPACE'){
+        if(cur.trim()) lines.push(cur.trim());
+        cur = '';
+      } else if(brk === 'SPACE' || brk === 'SURE_SPACE'){
+        cur += ' ';
+      }
+    });
+    if(cur.trim()){ lines.push(cur.trim()); cur = ''; }
+  });
+  return lines;
+}
+
 async function extractLinesVision(file, apiKey){
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data: buf}).promise;
@@ -333,6 +354,7 @@ async function extractLinesVision(file, apiKey){
     await page.render({canvasContext: ctx, viewport}).promise;
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     const base64 = dataUrl.split(',')[1];
+    const pageWidth = canvas.width;
     canvas.width = 0; canvas.height = 0; page.cleanup();
 
     const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
@@ -347,19 +369,33 @@ async function extractLinesVision(file, apiKey){
       })
     });
     const json = await resp.json();
-    if(json.error){
-      throw new Error('Vision API: ' + json.error.message);
-    }
+    if(json.error) throw new Error('Vision API: ' + json.error.message);
     if(json.responses && json.responses[0] && json.responses[0].error){
       throw new Error('Vision API: ' + json.responses[0].error.message);
     }
-    const text = json.responses && json.responses[0] && json.responses[0].fullTextAnnotation
-      ? json.responses[0].fullTextAnnotation.text : '';
-    if(!text){
-      allLines.push('(Vision-Antwort ohne Text – Debug-JSON:)');
-      allLines.push(JSON.stringify(json).slice(0, 1500));
+    const fta = json.responses && json.responses[0] && json.responses[0].fullTextAnnotation;
+    if(!fta || !fta.pages || !fta.pages[0]){
+      allLines.push('(Vision-Antwort ohne Text)');
+      continue;
     }
-    text.split('\n').map(l => l.trim()).filter(Boolean).forEach(l => allLines.push(l));
+
+    const blocks = [];
+    fta.pages[0].blocks.forEach(block => {
+      const verts = block.boundingBox.vertices.map(v => ({x: v.x || 0, y: v.y || 0}));
+      const avgX = verts.reduce((a,v) => a + v.x, 0) / verts.length;
+      const minY = Math.min(...verts.map(v => v.y));
+      blocks.push({block, avgX, minY});
+    });
+    const midX = pageWidth / 2;
+    blocks.sort((a, b) => {
+      const colA = a.avgX < midX ? 0 : 1;
+      const colB = b.avgX < midX ? 0 : 1;
+      if(colA !== colB) return colA - colB;
+      return a.minY - b.minY;
+    });
+    blocks.forEach(({block}) => {
+      blockToLines(block).forEach(l => allLines.push(l));
+    });
   }
   return allLines;
 }
