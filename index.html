@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v2.0</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v2.1</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -508,26 +508,41 @@ function parseRow(row){
 }
 
 function reorderScrambledRows(lines){
-  const isTime = l => /^\d{1,2}[:.]\d{2}\.?\s*$/i.test(l.trim());
-  const isAction = l => /^(ab|an)$/i.test(l.trim());
-  const stop = /^(Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b)/i;
+  const stop = /^(Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b|Service\b)/i;
+  const cls = l => {
+    if(stop.test(l)) return 'STOP';
+    const t = l.trim();
+    if(/^\d{1,2}[:.]\d{2}\.?\s*$/.test(t)) return 'TIME';
+    if(/^(ab|an)$/i.test(t)) return 'ACTION';
+    if(/^\d{1,2}[:.]\d{2}\b/.test(t)) return 'ROW';
+    return 'PLACE';
+  };
   const out = [];
   let i = 0;
   while(i < lines.length){
-    const a = lines[i], b = lines[i+1], c = lines[i+2];
-    if(a !== undefined && b !== undefined && c !== undefined &&
-       !isTime(a) && !isAction(a) && !stop.test(a) &&
-       isAction(b) && isTime(c)){
-      out.push(c.trim() + ' ' + b.trim() + ' ' + a.trim());
-      i += 3; continue;
+    const w3 = [lines[i], lines[i+1], lines[i+2]];
+    if(w3[0] !== undefined && w3[1] !== undefined && w3[2] !== undefined){
+      const c3 = w3.map(cls);
+      const cnt = {TIME:0, ACTION:0, PLACE:0, STOP:0, ROW:0};
+      c3.forEach(c => cnt[c]++);
+      if(cnt.TIME === 1 && cnt.ACTION === 1 && cnt.PLACE === 1 && cnt.STOP === 0 && cnt.ROW === 0){
+        const t = w3[c3.indexOf('TIME')], a = w3[c3.indexOf('ACTION')], p = w3[c3.indexOf('PLACE')];
+        out.push(t.trim() + ' ' + a.trim() + ' ' + p.trim());
+        i += 3; continue;
+      }
     }
-    if(a !== undefined && b !== undefined &&
-       !isTime(a) && !isAction(a) && !stop.test(a) &&
-       isTime(b)){
-      out.push(b.trim() + ' ' + a.trim());
-      i += 2; continue;
+    const w2 = [lines[i], lines[i+1]];
+    if(w2[0] !== undefined && w2[1] !== undefined){
+      const c2 = w2.map(cls);
+      const cnt = {TIME:0, PLACE:0, STOP:0, ACTION:0, ROW:0};
+      c2.forEach(c => cnt[c]++);
+      if(cnt.TIME === 1 && cnt.PLACE === 1 && cnt.ACTION === 0 && cnt.STOP === 0 && cnt.ROW === 0){
+        const t = w2[c2.indexOf('TIME')], p = w2[c2.indexOf('PLACE')];
+        out.push(t.trim() + ' ' + p.trim());
+        i += 2; continue;
+      }
     }
-    out.push(a);
+    out.push(lines[i]);
     i += 1;
   }
   return out;
