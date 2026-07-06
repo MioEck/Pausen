@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v2.1</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v2.2</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -771,9 +771,22 @@ function renderResults(p, a, b){
   const container = document.getElementById('results');
   const aIsBetter = a.endClock <= b.endClock;
   const needsA = a.endBreak > 0;
-  const needsB_only_if = true;
 
-  let html = '';
+  const plannedGap = p.gapSegments.reduce((x,y) => x+y, 0);
+  let gapNote = '';
+  if(plannedGap > 0){
+    if(plannedGap >= 45){
+      gapNote = `Die planmäßige Pause zwischen den Abschnitten (${plannedGap} min) reicht für sich genommen bereits als vollständige Pause (≥45 min).`;
+    } else if(plannedGap >= 15){
+      gapNote = `Die planmäßige Pause zwischen den Abschnitten (${plannedGap} min) zählt als erste Teilpause (≥15 min), reicht allein aber nicht als vollständige Pause.`;
+    } else {
+      gapNote = `Die planmäßige Pause zwischen den Abschnitten (${plannedGap} min) ist zu kurz (<15 min) und zählt rechtlich nicht als Teilpause.`;
+    }
+  } else {
+    gapNote = 'Zwischen den Linien-Abschnitten ist keine Pause eingeplant.';
+  }
+
+  let html = `<p style="color:var(--dim);font-size:0.85rem;margin-bottom:10px;">${gapNote}</p>`;
 
   // Option A
   html += `<div class="option ${aIsBetter && needsA ? 'best' : ''}">
@@ -795,7 +808,7 @@ function renderResults(p, a, b){
   </div>`;
 
   if(!needsA){
-    html = `<div class="option best"><h3>Keine Zusatzpause erforderlich</h3>
+    html += `<div class="option best"><h3>Keine Zusatzpause erforderlich</h3>
       <p>Gesamte Fahrzeit (Anfahrt + Linie(n) + Rückfahrt) bleibt unter 4:30 h.</p>
       <div class="end">Feierabend ca. ${fmtTime(a.endClock)} Uhr</div></div>`;
   } else {
