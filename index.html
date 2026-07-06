@@ -158,7 +158,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.7</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v1.8</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -471,7 +471,32 @@ function parseRow(row){
   return {timeMin, action, ort, raw: row};
 }
 
-function buildParsedResult(lines){
+function mergeSplitRows(lines){
+  const out = [];
+  const stopPattern = /^(\d{1,2}[:.]\d{2}\b|Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b)/i;
+  let i = 0;
+  while(i < lines.length){
+    const line = lines[i];
+    const timeOnly = line.match(/^\d{1,2}[:.]\d{2}\.?\s*(ab|an)?\s*$/i);
+    if(timeOnly){
+      let merged = line.trim();
+      let j = i + 1;
+      while(j < lines.length && !stopPattern.test(lines[j])){
+        merged += ' ' + lines[j].trim();
+        j++;
+      }
+      out.push(merged);
+      i = j;
+    } else {
+      out.push(line);
+      i++;
+    }
+  }
+  return out;
+}
+
+function buildParsedResult(rawLines){
+  const lines = mergeSplitRows(rawLines);
   const blocks = [];
   let i = 0;
   while(i < lines.length){
