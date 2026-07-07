@@ -157,7 +157,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v3.1</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v3.2</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -351,7 +351,7 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Erklärung, kein Markdown,
     },
     body: JSON.stringify({
       model: 'claude-sonnet-5',
-      max_tokens: 500,
+      max_tokens: 2048,
       messages: [{role: 'user', content}]
     })
   });
