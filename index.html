@@ -157,7 +157,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v3.0</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v3.1</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -358,6 +358,9 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Erklärung, kein Markdown,
   const json = await resp.json();
   if(json.error) throw new Error('Claude API: ' + json.error.message);
   const text = (json.content || []).map(b => b.text || '').join('').trim();
+  if(!text){
+    throw new Error('Leere Antwort. Rohdaten: ' + JSON.stringify(json).slice(0, 500));
+  }
   const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/,'').trim();
   let parsed;
   try{ parsed = JSON.parse(cleaned); }
