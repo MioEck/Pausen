@@ -8,7 +8,6 @@
 <link rel="icon" href="icon-192.png">
 <meta name="theme-color" content="#12161c">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   :root{
     --bg:#12161c;
@@ -158,7 +157,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v2.2</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v3.0</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -167,8 +166,8 @@
   <div class="card" id="uploadCard">
     <h2>1. Dienstplan hochladen</h2>
     <div class="field-wrap">
-      <label class="field">Google Cloud Vision API-Key (einmalig, wird gespeichert)</label>
-      <input type="text" id="apiKeyInput" placeholder="AIza...">
+      <label class="field">Anthropic (Claude) API-Key (einmalig, wird gespeichert)</label>
+      <input type="text" id="apiKeyInput" placeholder="sk-ant-...">
       <div class="status" id="apiKeyStatus"></div>
     </div>
     <div class="dropzone" id="dropzone">
@@ -261,7 +260,7 @@ const apiKeyInput = document.getElementById('apiKeyInput');
 const apiKeyStatus = document.getElementById('apiKeyStatus');
 (() => {
   try{
-    const val = localStorage.getItem('gcv_api_key');
+    const val = localStorage.getItem('anthropic_api_key');
     if(val){
       apiKeyInput.value = val;
       setStatus(apiKeyStatus, 'Gespeicherter Key geladen.', 'ok');
@@ -272,7 +271,7 @@ function saveApiKey(){
   const val = apiKeyInput.value.trim();
   if(!val){ setStatus(apiKeyStatus, ''); return; }
   try{
-    localStorage.setItem('gcv_api_key', val);
+    localStorage.setItem('anthropic_api_key', val);
     setStatus(apiKeyStatus, 'Key gespeichert ✓', 'ok');
   } catch(e){
     setStatus(apiKeyStatus, 'Speichern fehlgeschlagen: ' + e.message, 'err');
@@ -284,64 +283,33 @@ apiKeyInput.addEventListener('blur', saveApiKey);
 async function handleFile(file){
   const statusEl = document.getElementById('uploadStatus');
   document.getElementById('dropzoneText').textContent = file.name;
-  setStatus(statusEl, 'Lese PDF ein …');
   document.getElementById('extractCard').classList.remove('hidden');
-  let lines = [];
   const apiKey = apiKeyInput.value.trim();
+  if(!apiKey){
+    setStatus(statusEl, 'Bitte zuerst den Anthropic API-Key eintragen.', 'err');
+    return;
+  }
+  setStatus(statusEl, 'Sende PDF an Claude …');
   try{
-    lines = await extractLines(file);
-    let guess = buildParsedResult(lines);
-    if(!guess && apiKey){
-      setStatus(statusEl, 'Kein Text im PDF – sende an Google Cloud Vision …');
-      lines = await extractLinesVision(file, apiKey);
-      guess = buildParsedResult(lines);
-    } else if(!guess && !apiKey){
-      setStatus(statusEl, 'Kein Text im PDF – ohne API-Key läuft die schwächere lokale Erkennung. Starte OCR (kann dauern) …');
-      lines = await extractLinesOCR(file, statusEl);
-      guess = buildParsedResult(lines);
-    }
-    document.getElementById('rawBlocks').textContent = lines.length ? lines.join('\n') : '(kein Text erkannt)';
-    if(guess){
-      fillExtractFields(guess);
-      setStatus(statusEl, 'Automatisch erkannt – bitte prüfen und ggf. korrigieren.', 'ok');
-    } else {
-      setStatus(statusEl, 'Automatische Erkennung nicht sicher möglich – bitte Felder unten manuell ausfüllen (Rohdaten unten zur Hilfe).', 'err');
-    }
+    const guess = await extractViaClaude(file, apiKey);
+    document.getElementById('rawBlocks').textContent = guess.rawDebug || '';
+    fillExtractFields(guess);
+    setStatus(statusEl, 'Automatisch erkannt – bitte prüfen und ggf. korrigieren.', 'ok');
   } catch(err){
     console.error(err);
-    setStatus(statusEl, 'Automatische Erkennung fehlgeschlagen (' + err.message + ') – bitte Felder unten manuell ausfüllen.', 'err');
+    document.getElementById('rawBlocks').textContent = err.message;
+    setStatus(statusEl, 'Erkennung fehlgeschlagen (' + err.message + ') – bitte Felder unten manuell ausfüllen.', 'err');
   }
 }
 
-function blockToLines(block){
-  const lines = [];
-  let cur = '';
-  block.paragraphs.forEach(para => {
-    para.words.forEach(w => {
-      const wordText = w.symbols.map(s => s.text).join('');
-      cur += wordText;
-      const lastSym = w.symbols[w.symbols.length - 1];
-      const brk = lastSym.property && lastSym.property.detectedBreak && lastSym.property.detectedBreak.type;
-      if(brk === 'LINE_BREAK' || brk === 'EOL_SURE_SPACE'){
-        if(cur.trim()) lines.push(cur.trim());
-        cur = '';
-      } else if(brk === 'SPACE' || brk === 'SURE_SPACE'){
-        cur += ' ';
-      }
-    });
-    if(cur.trim()){ lines.push(cur.trim()); cur = ''; }
-  });
-  return lines;
-}
-
-async function extractLinesVision(file, apiKey){
+async function extractViaClaude(file, apiKey){
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({data: buf}).promise;
-  let allLines = [];
+  const pageImages = [];
   for(let p = 1; p <= pdf.numPages; p++){
     const page = await pdf.getPage(p);
-    let scale = 2.5;
-    const MAX_DIM = 2200;
+    let scale = 2.2;
+    const MAX_DIM = 2000;
     let viewport = page.getViewport({scale});
     if(Math.max(viewport.width, viewport.height) > MAX_DIM){
       scale = scale * (MAX_DIM / Math.max(viewport.width, viewport.height));
@@ -353,51 +321,61 @@ async function extractLinesVision(file, apiKey){
     const ctx = canvas.getContext('2d');
     await page.render({canvasContext: ctx, viewport}).promise;
     const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    const base64 = dataUrl.split(',')[1];
-    const pageWidth = canvas.width;
+    pageImages.push(dataUrl.split(',')[1]);
     canvas.width = 0; canvas.height = 0; page.cleanup();
-
-    const resp = await fetch(`https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        requests: [{
-          image: {content: base64},
-          features: [{type: 'DOCUMENT_TEXT_DETECTION'}],
-          imageContext: {languageHints: ['de']}
-        }]
-      })
-    });
-    const json = await resp.json();
-    if(json.error) throw new Error('Vision API: ' + json.error.message);
-    if(json.responses && json.responses[0] && json.responses[0].error){
-      throw new Error('Vision API: ' + json.responses[0].error.message);
-    }
-    const fta = json.responses && json.responses[0] && json.responses[0].fullTextAnnotation;
-    if(!fta || !fta.pages || !fta.pages[0]){
-      allLines.push('(Vision-Antwort ohne Text)');
-      continue;
-    }
-
-    const blocks = [];
-    fta.pages[0].blocks.forEach(block => {
-      const verts = block.boundingBox.vertices.map(v => ({x: v.x || 0, y: v.y || 0}));
-      const avgX = verts.reduce((a,v) => a + v.x, 0) / verts.length;
-      const minY = Math.min(...verts.map(v => v.y));
-      blocks.push({block, avgX, minY});
-    });
-    const midX = pageWidth / 2;
-    blocks.sort((a, b) => {
-      const colA = a.avgX < midX ? 0 : 1;
-      const colB = b.avgX < midX ? 0 : 1;
-      if(colA !== colB) return colA - colB;
-      return a.minY - b.minY;
-    });
-    blocks.forEach(({block}) => {
-      blockToLines(block).forEach(l => allLines.push(l));
-    });
   }
-  return allLines;
+
+  const prompt = `Das ist ein Umlaufplan/Dienstplan für einen Busfahrer (Schienenersatzverkehr). Er enthält mehrere Tabellenblöcke. NUR Blöcke, deren Kopfzeile links das Wort "Linie" und rechts eine Liniennummer zeigt (grün hinterlegt), sind relevant. Alle anderen Blöcke (Vorbereitung, Leerfahrten ohne "Linie"-Kopf, Einsteigen, Bezahlte Arbeitsunterbrechung, Abschluss) sind NICHT relevant.
+
+Ermittle:
+- startOrt: die Haltestelle in der ERSTEN Zeile unter dem ERSTEN "Linie"-Block
+- startTime: die Uhrzeit dieser Zeile (Format HH:MM)
+- endOrt: die Haltestelle in der LETZTEN Zeile unter dem LETZTEN "Linie"-Block
+- endTime: die Uhrzeit dieser Zeile (Format HH:MM)
+- totalDriveMinutes: Summe der reinen Fahrzeit aller "Linie"-Blöcke (letzte Zeile minus erste Zeile je Block, aufsummiert)
+- gapMinutes: Summe der Pausen zwischen den "Linie"-Blöcken (Zeit zwischen Ende eines Blocks und Start des nächsten Blocks)
+
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Erklärung, kein Markdown, keine Code-Fences. Format exakt:
+{"startOrt":"...","startTime":"HH:MM","endOrt":"...","endTime":"HH:MM","totalDriveMinutes":123,"gapMinutes":18}`;
+
+  const content = pageImages.map(img => ({type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: img}}));
+  content.push({type: 'text', text: prompt});
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true'
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 500,
+      messages: [{role: 'user', content}]
+    })
+  });
+  const json = await resp.json();
+  if(json.error) throw new Error('Claude API: ' + json.error.message);
+  const text = (json.content || []).map(b => b.text || '').join('').trim();
+  const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/,'').trim();
+  let parsed;
+  try{ parsed = JSON.parse(cleaned); }
+  catch(e){ throw new Error('Antwort war kein gültiges JSON: ' + text.slice(0,200)); }
+
+  const startTime = parseTimeStr(parsed.startTime);
+  const endTime = parseTimeStr(parsed.endTime);
+  if(!parsed.startOrt || !parsed.endOrt || startTime === null || endTime === null || !parsed.totalDriveMinutes){
+    throw new Error('Unvollständige Antwort von Claude.');
+  }
+  return {
+    startOrt: parsed.startOrt, startTime,
+    endOrt: parsed.endOrt, endTime,
+    driveSegments: [parsed.totalDriveMinutes],
+    gapSegments: parsed.gapMinutes > 0 ? [parsed.gapMinutes] : [],
+    totalDrive: parsed.totalDriveMinutes,
+    rawDebug: text
+  };
 }
 
 function fillExtractFields(p){
@@ -438,185 +416,6 @@ document.getElementById('useValuesBtn').addEventListener('click', () => {
   setStatus(statusEl, 'Übernommen.', 'ok');
   prepareCommuteCard(parsed);
 });
-
-async function extractLines(file){
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
-  let allLines = [];
-  for(let p=1; p<=pdf.numPages; p++){
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
-    const items = content.items.map(it => ({str: it.str, x: it.transform[4], y: it.transform[5]}));
-    const groups = {};
-    items.forEach(it => {
-      const key = Math.round(it.y / 2.5) * 2.5;
-      if(!groups[key]) groups[key] = [];
-      groups[key].push(it);
-    });
-    const ys = Object.keys(groups).map(Number).sort((a,b) => b - a);
-    ys.forEach(y => {
-      const line = groups[y].sort((a,b) => a.x - b.x).map(it => it.str).join(' ').replace(/\s+/g,' ').trim();
-      if(line) allLines.push(line);
-    });
-  }
-  return allLines;
-}
-
-async function extractLinesOCR(file, statusEl){
-  const buf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({data: buf}).promise;
-  const worker = await Tesseract.createWorker('deu');
-  let allLines = [];
-  try{
-    for(let p = 1; p <= pdf.numPages; p++){
-      setStatus(statusEl, `OCR läuft: Seite ${p} von ${pdf.numPages} …`);
-      const page = await pdf.getPage(p);
-      let scale = 2;
-      const MAX_DIM = 1800; // Obergrenze gegen Speicherfehler auf Handys
-      let viewport = page.getViewport({scale});
-      if(Math.max(viewport.width, viewport.height) > MAX_DIM){
-        scale = scale * (MAX_DIM / Math.max(viewport.width, viewport.height));
-        viewport = page.getViewport({scale});
-      }
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(viewport.width);
-      canvas.height = Math.round(viewport.height);
-      const ctx = canvas.getContext('2d', {willReadFrequently: true});
-      await page.render({canvasContext: ctx, viewport}).promise;
-      const worker2ready = await worker.setParameters({tessedit_pageseg_mode: '4'});
-      const {data} = await worker.recognize(canvas);
-      (data.text || '').split('\n').map(l => l.trim()).filter(Boolean).forEach(l => allLines.push(l));
-      canvas.width = 0;
-      canvas.height = 0;
-      page.cleanup();
-    }
-  } finally {
-    await worker.terminate();
-  }
-  return allLines;
-}
-
-function parseRow(row){
-  const m = row.match(/^(\d{1,2})[:.](\d{2})(?!\.\d)\s*(ab|an)?\s*(.+)$/i);
-  if(!m) return null;
-  const h = parseInt(m[1],10), mi = parseInt(m[2],10);
-  if(h > 23 || mi > 59) return null;
-  const timeMin = h * 60 + mi;
-  const action = (m[3] || '').toLowerCase();
-  let ort = m[4].trim().replace(/\s+[A-Z]$/, '');
-  return {timeMin, action, ort, raw: row};
-}
-
-function reorderScrambledRows(lines){
-  const stop = /^(Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b|Service\b)/i;
-  const cls = l => {
-    if(stop.test(l)) return 'STOP';
-    const t = l.trim();
-    if(/^\d{1,2}[:.]\d{2}\.?\s*$/.test(t)) return 'TIME';
-    if(/^(ab|an)$/i.test(t)) return 'ACTION';
-    if(/^\d{1,2}[:.]\d{2}\b/.test(t)) return 'ROW';
-    return 'PLACE';
-  };
-  const out = [];
-  let i = 0;
-  while(i < lines.length){
-    const w3 = [lines[i], lines[i+1], lines[i+2]];
-    if(w3[0] !== undefined && w3[1] !== undefined && w3[2] !== undefined){
-      const c3 = w3.map(cls);
-      const cnt = {TIME:0, ACTION:0, PLACE:0, STOP:0, ROW:0};
-      c3.forEach(c => cnt[c]++);
-      if(cnt.TIME === 1 && cnt.ACTION === 1 && cnt.PLACE === 1 && cnt.STOP === 0 && cnt.ROW === 0){
-        const t = w3[c3.indexOf('TIME')], a = w3[c3.indexOf('ACTION')], p = w3[c3.indexOf('PLACE')];
-        out.push(t.trim() + ' ' + a.trim() + ' ' + p.trim());
-        i += 3; continue;
-      }
-    }
-    const w2 = [lines[i], lines[i+1]];
-    if(w2[0] !== undefined && w2[1] !== undefined){
-      const c2 = w2.map(cls);
-      const cnt = {TIME:0, PLACE:0, STOP:0, ACTION:0, ROW:0};
-      c2.forEach(c => cnt[c]++);
-      if(cnt.TIME === 1 && cnt.PLACE === 1 && cnt.ACTION === 0 && cnt.STOP === 0 && cnt.ROW === 0){
-        const t = w2[c2.indexOf('TIME')], p = w2[c2.indexOf('PLACE')];
-        out.push(t.trim() + ' ' + p.trim());
-        i += 2; continue;
-      }
-    }
-    out.push(lines[i]);
-    i += 1;
-  }
-  return out;
-}
-
-function mergeSplitRows(lines){
-  const out = [];
-  const stopPattern = /^(\d{1,2}[:.]\d{2}\b|Linie\b|L[äa]nge in km|Fahrt-Nr|Bezahlte|Einsteigen|Betriebshof|Dienst\b|Verkehrstage|Abschluss\b)/i;
-  let i = 0;
-  while(i < lines.length){
-    const line = lines[i];
-    const timeOnly = line.match(/^\d{1,2}[:.]\d{2}\.?\s*(ab|an)?\s*$/i);
-    if(timeOnly){
-      let merged = line.trim();
-      let j = i + 1;
-      while(j < lines.length && !stopPattern.test(lines[j])){
-        merged += ' ' + lines[j].trim();
-        j++;
-      }
-      out.push(merged);
-      i = j;
-    } else {
-      out.push(line);
-      i++;
-    }
-  }
-  return out;
-}
-
-function buildParsedResult(rawLines){
-  const lines = mergeSplitRows(reorderScrambledRows(rawLines));
-  const blocks = [];
-  let i = 0;
-  while(i < lines.length){
-    if(/^Linie\b/i.test(lines[i])){
-      let j = i + 1;
-      while(j < lines.length && !/^\d{1,2}[:.]\d{2}\b/.test(lines[j]) && !/^Linie\b/i.test(lines[j]) && j < i + 15) j++;
-      const rows = [];
-      while(j < lines.length && /^\d{1,2}[:.]\d{2}\b/.test(lines[j])){
-        const row = parseRow(lines[j]);
-        if(row) rows.push(row);
-        j++;
-      }
-      if(rows.length >= 1) blocks.push(rows);
-      i = j;
-    } else {
-      i++;
-    }
-  }
-  if(blocks.length === 0) return null;
-
-  const first = blocks[0][0];
-  const last = blocks[blocks.length - 1][blocks[blocks.length - 1].length - 1];
-
-  const driveSegments = blocks.map(rows => {
-    let d = rows[rows.length - 1].timeMin - rows[0].timeMin;
-    if(d < 0) d += 1440;
-    return d;
-  });
-  const gapSegments = [];
-  for(let k = 0; k < blocks.length - 1; k++){
-    let g = blocks[k+1][0].timeMin - blocks[k][blocks[k].length - 1].timeMin;
-    if(g < 0) g += 1440;
-    if(g > 0) gapSegments.push(g);
-  }
-  const totalDrive = driveSegments.reduce((a,b) => a+b, 0);
-  if(totalDrive <= 0) return null;
-
-  return {
-    startOrt: first.ort, startTime: first.timeMin,
-    endOrt: last.ort, endTime: last.timeMin,
-    driveSegments, gapSegments, totalDrive
-  };
-}
 
 function fmtTime(min){
   min = ((min % 1440) + 1440) % 1440;
