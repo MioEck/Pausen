@@ -1,4 +1,4 @@
-const CACHE = 'pausenplaner-v4.0';
+const CACHE = 'pausenplaner-v4.2';
 const ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {

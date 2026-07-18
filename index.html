@@ -157,7 +157,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v4.0</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v4.2</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -639,111 +639,115 @@ function analyzeCompliance(segs){
 }
 
 function renderCompliance(p, commuteOut, commuteBack){
-  const segs = [{type:'drive', min: commuteOut, label: 'Anfahrt zur Firma'}];
-  p.blocks.forEach((b, idx) => {
-    let d = b.endTime - b.startTime; if(d < 0) d += 1440;
-    segs.push({type:'drive', min: d, label: `Linie ${idx+1}: ${fmtTime(b.startTime)} ${b.startOrt} → ${fmtTime(b.endTime)} ${b.endOrt}`});
-    if(idx < p.blocks.length - 1){
-      let g = p.blocks[idx+1].startTime - b.endTime; if(g < 0) g += 1440;
-      segs.push({type:'break', min: g, label: `Anschluss ${fmtTime(b.endTime)}–${fmtTime(p.blocks[idx+1].startTime)}`});
-    }
-  });
-  segs.push({type:'drive', min: commuteBack, label: 'Rückfahrt zur Firma'});
+  function buildSegs(frontBreak){
+    const segs = [{type:'drive', min: commuteOut, label: 'Anfahrt zur Firma'}];
+    if(frontBreak) segs.push({type:'break', min: 45, label: 'Pause vor Linie 1 (nach Anfahrt)'});
+    p.blocks.forEach((b, idx) => {
+      let d = b.endTime - b.startTime; if(d < 0) d += 1440;
+      segs.push({type:'drive', min: d, label: `Linie ${idx+1}: ${fmtTime(b.startTime)} ${b.startOrt} → ${fmtTime(b.endTime)} ${b.endOrt}`});
+      if(idx < p.blocks.length - 1){
+        let g = p.blocks[idx+1].startTime - b.endTime; if(g < 0) g += 1440;
+        segs.push({type:'break', min: g, label: `Anschluss ${fmtTime(b.endTime)}–${fmtTime(p.blocks[idx+1].startTime)}`});
+      }
+    });
+    segs.push({type:'drive', min: commuteBack, label: 'Rückfahrt zur Firma'});
+    return segs;
+  }
 
-  const {breakNotes, inserted} = analyzeCompliance(segs);
-  const problems = breakNotes.filter(n => n.status === 'insufficient');
+  function withClockTimes(segs, analysis, startClock){
+    const insufficientByIdx = {};
+    analysis.breakNotes.forEach(n => { if(n.status === 'insufficient') insufficientByIdx[n.idx] = n.needed; });
+    const insertedByLabel = {};
+    analysis.inserted.forEach(x => { insertedByLabel[x.beforeLabel] = x.min; });
+
+    let clock = startClock;
+    const out = [];
+    segs.forEach((seg, idx) => {
+      if(insertedByLabel[seg.label] !== undefined){
+        const min = insertedByLabel[seg.label];
+        out.push({type:'break', label:'Zusätzliche Pause', min, start:clock, end:clock+min, inserted:true});
+        clock += min;
+      }
+      const min = insufficientByIdx[idx] !== undefined ? insufficientByIdx[idx] : seg.min;
+      out.push(Object.assign({}, seg, {min, start: clock, end: clock+min, extended: insufficientByIdx[idx] !== undefined, originalMin: seg.min}));
+      clock += min;
+    });
+    return {segs: out, endClock: clock};
+  }
+
+  const segsNatural = buildSegs(false);
+  const resNatural = analyzeCompliance(segsNatural);
+  const problemsNatural = resNatural.breakNotes.filter(n => n.status === 'insufficient');
+  const startClockNatural = p.blocks[0].startTime - commuteOut;
+  const timedNatural = withClockTimes(segsNatural, resNatural, startClockNatural);
+
+  const segsFront = buildSegs(true);
+  const resFront = analyzeCompliance(segsFront);
+  const problemsFront = resFront.breakNotes.filter(n => n.status === 'insufficient');
+  const startClockFront = p.blocks[0].startTime - commuteOut - 45;
+  const timedFront = withClockTimes(segsFront, resFront, startClockFront);
 
   document.getElementById('resultCard').classList.remove('hidden');
   const container = document.getElementById('results');
   let html = '';
 
-  if(problems.length === 0 && inserted.length === 0){
-    const endClock = p.endTime + commuteBack;
-    html = `<div class="option best"><h3>Plan ist einhaltbar</h3>
-      <p>Alle Anschlüsse zwischen den Linien-Abschnitten reichen als Pause aus.</p>
-      <div class="end">Feierabend ca. ${fmtTime(endClock)} Uhr</div></div>`;
-  } else {
-    if(problems.length > 0){
-      html += `<div class="option" style="border-color:var(--danger);">
-        <h3 style="color:var(--danger);">Fahrplan nicht wie gedruckt fahrbar</h3>
-        <p>Folgende Anschlüsse zwischen zwei Linien-Abschnitten sind zu kurz, um die 4:30-Std-Grenze einzuhalten:</p>
-        ${problems.map(n => `<p>• ${n.label}: nur <strong>${n.min} min</strong>, nötig wären mind. <strong>${n.needed} min</strong></p>`).join('')}
-        <p style="margin-top:8px;">Das lässt sich nicht durch eine andere Pausenwahl lösen, da diese Anschlusszeiten im Fahrplan fest vorgegeben sind. Das muss an die Disposition/Fahrdienstleitung gemeldet werden.</p>
-      </div>`;
-    }
-    if(inserted.length > 0){
-      let extra = inserted.reduce((a,b) => a+b.min, 0);
-      const endClock = p.endTime + commuteBack + extra;
-      html += `<div class="option best">
-        <h3>Zusätzliche Pause nötig</h3>
-        ${inserted.map(x => `<p>Vor "${x.beforeLabel}" müssen mind. <strong>${x.min} min</strong> Pause eingelegt werden.</p>`).join('')}
-        <div class="end">Feierabend ca. ${fmtTime(endClock)} Uhr</div>
-        <p>(Nur gültig, wenn die oben genannten Anschluss-Probleme separat gelöst sind.)</p>
-      </div>`;
-    }
+  function extraFrom(res){ return res.inserted.reduce((a,b) => a+b.min, 0); }
+
+  function justifyNeeded(needed){
+    if(needed === 30) return `30 Min. reichen hier, weil vorher schon eine echte Teilpause ≥15 Min. im selben Lenkblock genommen wurde.`;
+    return `Es wurde vorher noch keine Teilpause genommen – daher sind volle 45 Min. nötig, nicht nur 30.`;
   }
 
-  html += `<details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;">Alle Abschnitte im Detail</summary>
-    <div class="blockline" style="margin-top:6px;">${segs.map(s => `${s.type==='drive'?'Fahrt':'Pause'}: ${s.label} (${s.min} min)`).join('\n')}</div>
+  function renderTimeline(timed){
+    return timed.segs.map(s => {
+      if(s.type === 'drive'){
+        return `<p>Fahrt: ${fmtTime(s.start)}–${fmtTime(s.end)} ${s.label}</p>`;
+      }
+      let extra = '';
+      if(s.inserted) extra = ` <span style="color:var(--accent2);">(zusätzlich eingelegt)</span>`;
+      else if(s.extended) extra = ` <span style="color:var(--accent2);">(verlängert von ${s.originalMin} auf ${s.min} Min.)</span>`;
+      return `<p>Pause: ${fmtTime(s.start)}–${fmtTime(s.end)} ${s.label} (${s.min} Min.)${extra}</p>`;
+    }).join('');
+  }
+
+  const frontOk = problemsFront.length === 0;
+  const naturalOk = problemsNatural.length === 0;
+
+  if(frontOk && (!naturalOk || extraFrom(resFront) + 45 < extraFrom(resNatural))){
+    html += `<div class="option best">
+      <h3>Empfehlung: 45 Min. Pause direkt nach der Anfahrt <span class="badge">Fahrbar</span></h3>
+      <p>Vor Linie 1 (${fmtTime(p.blocks[0].startTime)} Uhr) 45 Min. Pause einlegen, statt auf die kurzen Anschlüsse unterwegs zu setzen. Damit sind alle Anschlüsse ausreichend.</p>
+      ${resFront.inserted.map(x => `<p>Zusätzlich vor "${x.beforeLabel}": mind. <strong>${x.min} min</strong>. ${justifyNeeded(x.min)}</p>`).join('')}
+      <div class="end">Feierabend ca. ${fmtTime(timedFront.endClock)} Uhr</div>
+      <p>Abfahrt ab Firma: ${fmtTime(startClockFront)} Uhr</p>
+      <div style="margin-top:8px;">${renderTimeline(timedFront)}</div>
+    </div>`;
+  }
+
+  if(!naturalOk){
+    html += `<div class="option" style="border-color:var(--danger);">
+      <h3 style="color:var(--danger);">Ohne Frontpause: Fahrplan nicht wie gedruckt fahrbar</h3>
+      <p>Folgende Anschlüsse zwischen zwei Linien-Abschnitten sind sonst zu kurz:</p>
+      ${problemsNatural.map(n => `<p>• ${n.label}: nur <strong>${n.min} min</strong>, nötig wären mind. <strong>${n.needed} min</strong>. ${justifyNeeded(n.needed)}</p>`).join('')}
+      <p style="margin-top:8px;">Ohne die 45-Min-Pause vor Linie 1 (siehe oben) lässt sich das nicht durch spätere Pausenwahl lösen, da diese Anschlusszeiten fest im Fahrplan stehen.</p>
+    </div>`;
+  } else if(!frontOk || extraFrom(resNatural) <= extraFrom(resFront) + 45){
+    html += `<div class="option ${!frontOk ? 'best' : ''}">
+      <h3>Ohne Frontpause: Plan ist einhaltbar</h3>
+      ${resNatural.inserted.length > 0 ? resNatural.inserted.map(x => `<p>Vor "${x.beforeLabel}" müssen mind. <strong>${x.min} min</strong> Pause eingelegt werden. ${justifyNeeded(x.min)}</p>`).join('') : '<p>Alle Anschlüsse reichen bereits aus.</p>'}
+      <div class="end">Feierabend ca. ${fmtTime(timedNatural.endClock)} Uhr</div>
+      <p>Abfahrt ab Firma: ${fmtTime(startClockNatural)} Uhr</p>
+      <div style="margin-top:8px;">${renderTimeline(timedNatural)}</div>
+    </div>`;
+  }
+
+  html += `<details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;">Alle Abschnitte im Detail (ohne Frontpause, Original)</summary>
+    <div class="blockline" style="margin-top:6px;">${segsNatural.map(s => `${s.type==='drive'?'Fahrt':'Pause'}: ${s.label} (${s.min} min)`).join('\n')}</div>
   </details>`;
 
   container.innerHTML = html;
 }
-
-function renderResults(p, a, b){
-  document.getElementById('resultCard').classList.remove('hidden');
-  const container = document.getElementById('results');
-  const aIsBetter = a.endClock <= b.endClock;
-  const needsA = a.endBreak > 0;
-
-  const plannedGap = p.gapSegments.reduce((x,y) => x+y, 0);
-  let gapNote = '';
-  if(plannedGap > 0){
-    if(plannedGap >= 45){
-      gapNote = `Die planmäßige Pause zwischen den Abschnitten (${plannedGap} min) reicht für sich genommen bereits als vollständige Pause (≥45 min).`;
-    } else if(plannedGap >= 15){
-      gapNote = `Die planmäßige Pause zwischen den Abschnitten (${plannedGap} min) zählt als erste Teilpause (≥15 min), reicht allein aber nicht als vollständige Pause.`;
-    } else {
-      gapNote = `Die planmäßige Pause zwischen den Abschnitten (${plannedGap} min) ist zu kurz (<15 min) und zählt rechtlich nicht als Teilpause.`;
-    }
-  } else {
-    gapNote = 'Zwischen den Linien-Abschnitten ist keine Pause eingeplant.';
-  }
-
-  let html = `<p style="color:var(--dim);font-size:0.85rem;margin-bottom:10px;">${gapNote}</p>`;
-
-  // Option A
-  html += `<div class="option ${aIsBetter && needsA ? 'best' : ''}">
-    <h3>${a.label} ${aIsBetter ? '<span class="badge">Früher</span>' : ''}</h3>
-    ${a.endBreak > 0
-      ? `<p>Erforderliche Pause an ${p.endOrt} (${fmtTime(p.endTime)} Uhr): <strong>${a.endBreak} min</strong></p>`
-      : `<p>Keine zusätzliche Pause nötig.</p>`}
-    <div class="end">Feierabend ca. ${fmtTime(a.endClock)} Uhr</div>
-    <p>Abfahrt ab Firma: ${fmtTime(a.startClock)} Uhr</p>
-  </div>`;
-
-  // Option B
-  html += `<div class="option ${!aIsBetter ? 'best' : ''}">
-    <h3>${b.label} ${!aIsBetter ? '<span class="badge">Früher</span>' : ''}</h3>
-    <p>45 min Pause direkt nach Ankunft in ${p.startOrt}, vor Linienbeginn (${fmtTime(p.startTime)} Uhr).</p>
-    ${b.extraEndBreak > 0 ? `<p>Zusätzlich am Ende nötig: ${b.extraEndBreak} min.</p>` : `<p>Am Ende keine weitere Pause nötig.</p>`}
-    <div class="end">Feierabend ca. ${fmtTime(b.endClock)} Uhr</div>
-    <p>Abfahrt ab Firma: ${fmtTime(b.startClock)} Uhr (45 min früher als Option A)</p>
-  </div>`;
-
-  if(!needsA){
-    html += `<div class="option best"><h3>Keine Zusatzpause erforderlich</h3>
-      <p>Gesamte Fahrzeit (Anfahrt + Linie(n) + Rückfahrt) bleibt unter 4:30 h.</p>
-      <div class="end">Feierabend ca. ${fmtTime(a.endClock)} Uhr</div></div>`;
-  } else {
-    html += `<p style="color:var(--dim);font-size:0.8rem;margin-top:4px;">
-      Empfehlung: ${a.endClock < b.endClock ? 'Pause am Ende reicht bereits und ist am günstigsten.' :
-      (b.endClock < a.endClock ? 'Frühere Pause vor Linienstart spart Zeit am Ende, dafür ' + (b.startClock < a.startClock ? (a.startClock - b.startClock) : 0) + ' min früherer Start.' : 'Beide Varianten enden gleich.')}
-    </p>`;
-  }
-
-  container.innerHTML = html;
-}if('serviceWorker' in navigator){
+if('serviceWorker' in navigator){
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
 }
 </script>
