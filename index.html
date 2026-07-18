@@ -157,7 +157,7 @@
 <body>
 
 <header>
-  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v3.2</span></h1>
+  <h1>Pausenplaner <span style="font-size:0.7rem;color:var(--dim);font-weight:400;">v4.0</span></h1>
   <p>PDF hochladen → Startbahnhof/Endbahnhof + Linienzeiten erkennen → beste Pausenaufteilung berechnen</p>
 </header>
 
@@ -325,18 +325,15 @@ async function extractViaClaude(file, apiKey){
     canvas.width = 0; canvas.height = 0; page.cleanup();
   }
 
-  const prompt = `Das ist ein Umlaufplan/Dienstplan für einen Busfahrer (Schienenersatzverkehr). Er enthält mehrere Tabellenblöcke. NUR Blöcke, deren Kopfzeile links das Wort "Linie" und rechts eine Liniennummer zeigt (grün hinterlegt), sind relevant. Alle anderen Blöcke (Vorbereitung, Leerfahrten ohne "Linie"-Kopf, Einsteigen, Bezahlte Arbeitsunterbrechung, Abschluss) sind NICHT relevant.
+  const prompt = `Das ist ein Umlaufplan/Dienstplan für einen Busfahrer (Schienenersatzverkehr). Er enthält mehrere Tabellenblöcke, teils in zwei Spalten nebeneinander. NUR Blöcke, deren Kopfzeile links das Wort "Linie" und rechts eine Liniennummer zeigt (meist grün hinterlegt), sind relevant. Alle anderen Blöcke (Vorbereitung, Leerfahrten ohne "Linie"-Kopf, Einsteigen, Bezahlte Arbeitsunterbrechung, Pause, Abschluss) sind NICHT relevant, außer um die Uhrzeiten zu verstehen.
 
-Ermittle:
-- startOrt: die Haltestelle in der ERSTEN Zeile unter dem ERSTEN "Linie"-Block
-- startTime: die Uhrzeit dieser Zeile (Format HH:MM)
-- endOrt: die Haltestelle in der LETZTEN Zeile unter dem LETZTEN "Linie"-Block
-- endTime: die Uhrzeit dieser Zeile (Format HH:MM)
-- totalDriveMinutes: Summe der reinen Fahrzeit aller "Linie"-Blöcke (letzte Zeile minus erste Zeile je Block, aufsummiert)
-- gapMinutes: Summe der Pausen zwischen den "Linie"-Blöcken (Zeit zwischen Ende eines Blocks und Start des nächsten Blocks)
+Finde ALLE "Linie"-Blöcke im Dokument (können mehrere sein, z.B. 2 oder 4). Sortiere sie nach ihrer tatsächlichen Uhrzeit (chronologisch), NICHT nach ihrer Position auf der Seite (bei zwei Spalten gehört die linke Spalte zeitlich meist vor die rechte, aber verlasse dich auf die Uhrzeiten selbst).
+
+Gib für JEDEN "Linie"-Block: die Haltestelle und Uhrzeit der ERSTEN Zeile darunter (startOrt, startTime), und die Haltestelle und Uhrzeit der LETZTEN Zeile darunter (endOrt, endTime).
 
 Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Erklärung, kein Markdown, keine Code-Fences. Format exakt:
-{"startOrt":"...","startTime":"HH:MM","endOrt":"...","endTime":"HH:MM","totalDriveMinutes":123,"gapMinutes":18}`;
+{"blocks":[{"startOrt":"...","startTime":"HH:MM","endOrt":"...","endTime":"HH:MM"}, ...]}
+Die Blöcke müssen in der Liste chronologisch (nach Uhrzeit aufsteigend) sortiert sein.`;
 
   const content = pageImages.map(img => ({type: 'image', source: {type: 'base64', media_type: 'image/jpeg', data: img}}));
   content.push({type: 'text', text: prompt});
@@ -362,26 +359,46 @@ Antworte AUSSCHLIESSLICH mit einem JSON-Objekt, keine Erklärung, kein Markdown,
     throw new Error('Leere Antwort. Rohdaten: ' + JSON.stringify(json).slice(0, 500));
   }
   const cleaned = text.replace(/^```json\s*/i, '').replace(/```\s*$/,'').trim();
-  let parsed;
-  try{ parsed = JSON.parse(cleaned); }
+  let resultJson;
+  try{ resultJson = JSON.parse(cleaned); }
   catch(e){ throw new Error('Antwort war kein gültiges JSON: ' + text.slice(0,200)); }
 
-  const startTime = parseTimeStr(parsed.startTime);
-  const endTime = parseTimeStr(parsed.endTime);
-  if(!parsed.startOrt || !parsed.endOrt || startTime === null || endTime === null || !parsed.totalDriveMinutes){
-    throw new Error('Unvollständige Antwort von Claude.');
+  const rawBlocks = resultJson.blocks;
+  if(!Array.isArray(rawBlocks) || rawBlocks.length === 0){
+    throw new Error('Keine Linien-Blöcke in der Antwort gefunden.');
   }
+  const blocks = rawBlocks.map(b => {
+    const st = parseTimeStr(b.startTime), et = parseTimeStr(b.endTime);
+    if(!b.startOrt || !b.endOrt || st === null || et === null) return null;
+    return {startOrt: b.startOrt, startTime: st, endOrt: b.endOrt, endTime: et};
+  }).filter(Boolean);
+  if(blocks.length === 0) throw new Error('Linien-Blöcke unvollständig.');
+  blocks.sort((a,b) => a.startTime - b.startTime);
+
+  const driveSegments = blocks.map(b => {
+    let d = b.endTime - b.startTime; if(d < 0) d += 1440;
+    return d;
+  });
+  const gapSegments = [];
+  for(let k = 0; k < blocks.length - 1; k++){
+    let g = blocks[k+1].startTime - blocks[k].endTime; if(g < 0) g += 1440;
+    gapSegments.push(g);
+  }
+
   return {
-    startOrt: parsed.startOrt, startTime,
-    endOrt: parsed.endOrt, endTime,
-    driveSegments: [parsed.totalDriveMinutes],
-    gapSegments: parsed.gapMinutes > 0 ? [parsed.gapMinutes] : [],
-    totalDrive: parsed.totalDriveMinutes,
+    blocks,
+    startOrt: blocks[0].startOrt, startTime: blocks[0].startTime,
+    endOrt: blocks[blocks.length-1].endOrt, endTime: blocks[blocks.length-1].endTime,
+    driveSegments, gapSegments,
+    totalDrive: driveSegments.reduce((a,b)=>a+b,0),
     rawDebug: text
   };
 }
 
+let lastAutoResult = null;
+
 function fillExtractFields(p){
+  lastAutoResult = p;
   document.getElementById('startOrtInput').value = p.startOrt;
   document.getElementById('startTimeInput').value = fmtTime(p.startTime);
   document.getElementById('endOrtInput').value = p.endOrt;
@@ -410,12 +427,24 @@ document.getElementById('useValuesBtn').addEventListener('click', () => {
     return;
   }
 
-  parsed = {
-    startOrt, endOrt, startTime, endTime,
-    driveSegments: [totalDrive],
-    gapSegments: plannedBreak > 0 ? [plannedBreak] : [],
-    totalDrive
-  };
+  const autoMatches = lastAutoResult &&
+    startOrt === lastAutoResult.startOrt &&
+    endOrt === lastAutoResult.endOrt &&
+    startTime === lastAutoResult.startTime &&
+    endTime === lastAutoResult.endTime &&
+    totalDrive === lastAutoResult.totalDrive &&
+    plannedBreak === lastAutoResult.gapSegments.reduce((a,b)=>a+b,0);
+
+  if(autoMatches){
+    parsed = lastAutoResult;
+  } else {
+    parsed = {
+      startOrt, endOrt, startTime, endTime,
+      driveSegments: [totalDrive],
+      gapSegments: plannedBreak > 0 ? [plannedBreak] : [],
+      totalDrive
+    };
+  }
   setStatus(statusEl, 'Übernommen.', 'ok');
   prepareCommuteCard(parsed);
 });
@@ -518,6 +547,10 @@ function simulate(segments){
 }
 
 function computeAndShow(p, commuteOut, commuteBack){
+  if(p.blocks && p.blocks.length > 2){
+    renderCompliance(p, commuteOut, commuteBack);
+    return;
+  }
   // Basissegmente ohne Zusatzpause (natürliche Lücken zwischen Linienblöcken enthalten)
   function baseSegments(){
     const segs = [{type:'drive', min: commuteOut}];
@@ -566,6 +599,95 @@ function computeAndShow(p, commuteOut, commuteBack){
   }
 
   renderResults(p, optionA, optionB);
+}
+
+// ---------- Allgemeine Prüfung für mehr als 2 Linien-Blöcke ----------
+// Geht die Segmente in tatsächlicher Reihenfolge durch. Bei einer Überschreitung
+// wird geprüft: liegt direkt davor eine natürliche Pause (Anschlusszeit im Fahrplan)?
+// Dann müsste GENAU DIESER Anschluss länger sein (Fahrplan-Problem, nicht vom Fahrer lösbar).
+// Liegt davor keine Pause (z.B. direkt vor der Rückfahrt), kann dort eine neue Pause eingelegt werden.
+function analyzeCompliance(segs){
+  let cum = 0, firstPartTaken = false;
+  const breakNotes = [];
+  const inserted = [];
+  for(let i = 0; i < segs.length; i++){
+    const seg = segs[i];
+    if(seg.type === 'break'){
+      const enterFirstPart = firstPartTaken;
+      if(seg.min >= 45){ cum = 0; firstPartTaken = false; }
+      else if(seg.min >= 30 && firstPartTaken){ cum = 0; firstPartTaken = false; }
+      else if(seg.min >= 15 && !firstPartTaken){ firstPartTaken = true; }
+      breakNotes.push({idx: i, label: seg.label, min: seg.min, enterFirstPart, status: 'ok', needed: null});
+    } else {
+      const enterFirstPart = firstPartTaken;
+      if(cum + seg.min > LEGAL_LIMIT){
+        const needed = enterFirstPart ? 30 : 45;
+        const prevSeg = segs[i-1];
+        if(prevSeg && prevSeg.type === 'break'){
+          const note = breakNotes[breakNotes.length - 1];
+          note.status = 'insufficient';
+          note.needed = note.enterFirstPart ? 30 : 45;
+        } else {
+          inserted.push({beforeLabel: seg.label, min: needed});
+        }
+        cum = 0; firstPartTaken = false;
+      }
+      cum += seg.min;
+    }
+  }
+  return {breakNotes, inserted};
+}
+
+function renderCompliance(p, commuteOut, commuteBack){
+  const segs = [{type:'drive', min: commuteOut, label: 'Anfahrt zur Firma'}];
+  p.blocks.forEach((b, idx) => {
+    let d = b.endTime - b.startTime; if(d < 0) d += 1440;
+    segs.push({type:'drive', min: d, label: `Linie ${idx+1}: ${fmtTime(b.startTime)} ${b.startOrt} → ${fmtTime(b.endTime)} ${b.endOrt}`});
+    if(idx < p.blocks.length - 1){
+      let g = p.blocks[idx+1].startTime - b.endTime; if(g < 0) g += 1440;
+      segs.push({type:'break', min: g, label: `Anschluss ${fmtTime(b.endTime)}–${fmtTime(p.blocks[idx+1].startTime)}`});
+    }
+  });
+  segs.push({type:'drive', min: commuteBack, label: 'Rückfahrt zur Firma'});
+
+  const {breakNotes, inserted} = analyzeCompliance(segs);
+  const problems = breakNotes.filter(n => n.status === 'insufficient');
+
+  document.getElementById('resultCard').classList.remove('hidden');
+  const container = document.getElementById('results');
+  let html = '';
+
+  if(problems.length === 0 && inserted.length === 0){
+    const endClock = p.endTime + commuteBack;
+    html = `<div class="option best"><h3>Plan ist einhaltbar</h3>
+      <p>Alle Anschlüsse zwischen den Linien-Abschnitten reichen als Pause aus.</p>
+      <div class="end">Feierabend ca. ${fmtTime(endClock)} Uhr</div></div>`;
+  } else {
+    if(problems.length > 0){
+      html += `<div class="option" style="border-color:var(--danger);">
+        <h3 style="color:var(--danger);">Fahrplan nicht wie gedruckt fahrbar</h3>
+        <p>Folgende Anschlüsse zwischen zwei Linien-Abschnitten sind zu kurz, um die 4:30-Std-Grenze einzuhalten:</p>
+        ${problems.map(n => `<p>• ${n.label}: nur <strong>${n.min} min</strong>, nötig wären mind. <strong>${n.needed} min</strong></p>`).join('')}
+        <p style="margin-top:8px;">Das lässt sich nicht durch eine andere Pausenwahl lösen, da diese Anschlusszeiten im Fahrplan fest vorgegeben sind. Das muss an die Disposition/Fahrdienstleitung gemeldet werden.</p>
+      </div>`;
+    }
+    if(inserted.length > 0){
+      let extra = inserted.reduce((a,b) => a+b.min, 0);
+      const endClock = p.endTime + commuteBack + extra;
+      html += `<div class="option best">
+        <h3>Zusätzliche Pause nötig</h3>
+        ${inserted.map(x => `<p>Vor "${x.beforeLabel}" müssen mind. <strong>${x.min} min</strong> Pause eingelegt werden.</p>`).join('')}
+        <div class="end">Feierabend ca. ${fmtTime(endClock)} Uhr</div>
+        <p>(Nur gültig, wenn die oben genannten Anschluss-Probleme separat gelöst sind.)</p>
+      </div>`;
+    }
+  }
+
+  html += `<details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--dim);font-size:0.8rem;">Alle Abschnitte im Detail</summary>
+    <div class="blockline" style="margin-top:6px;">${segs.map(s => `${s.type==='drive'?'Fahrt':'Pause'}: ${s.label} (${s.min} min)`).join('\n')}</div>
+  </details>`;
+
+  container.innerHTML = html;
 }
 
 function renderResults(p, a, b){
